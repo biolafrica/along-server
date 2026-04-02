@@ -41,17 +41,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: 'Subscription is no longer pending' }, { status: 409 });
     }
 
-    // Fetch both parties
-    const [riderDoc, hostDoc] = await Promise.all([
+    // Fetch both parties + host profile doc (schedule lives on hosts/, not users/)
+    const [riderDoc, hostUserDoc, hostProfileDoc] = await Promise.all([
       db.collection('users').doc(sub.rider_id).get(),
       db.collection('users').doc(uid).get(),
+      db.collection('hosts').doc(uid).get(),           // ← schedule is here
     ]);
-    const rider = riderDoc.data();
-    const host  = hostDoc.data();
+    const rider       = riderDoc.data();
+    const host        = hostUserDoc.data();
+    const hostProfile = hostProfileDoc.data();
 
     // ── Accept ────────────────────────────────────────────────────────────────
     if (decision === 'accept') {
-      await subRef.update({ status: 'active', accepted_at: new Date().toISOString() });
+      // Start date = tomorrow — gives the rider time to prepare and ensures
+      // no daily_rides are created for a day that's already in progress.
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() + 1);
+      startDate.setHours(0, 0, 0, 0);
+
+      const endDate = new Date(startDate);
+      endDate.setMonth(endDate.getMonth() + (sub.duration_months ?? 1));
+
+      await subRef.update({
+        status:      'active',
+        accepted_at: new Date().toISOString(),
+        start_date:  startDate.toISOString(),
+        end_date:    endDate.toISOString(),
+      });
 
       // Get route for email details
       const routeSnap = await db.collection('routes').where('host_id', '==', uid).limit(1).get();
@@ -61,18 +77,27 @@ export async function POST(req: NextRequest) {
       const depTime   = routeData?.departure_time ? formatTime(routeData.departure_time) : '—';
       const period    = new Date().toLocaleString('en-NG', { month: 'long', year: 'numeric' });
 
-      console.log(`[handle-host-decision] Subscription ${subscriptionId} accepted. Creating daily rides and sending notifications/emails.`);
+      // Schedule comes from the hosts doc — this was the bug
+      const schedule  = hostProfile?.schedule ?? {};
 
-      // Create daily_rides for every active day in this subscription period
-      // so the schedule tab has data immediately after acceptance.
-      await createDailyRides(subscriptionId, sub, hostDoc.data()?.schedule ?? {});
+      console.log('[handle-host-decision] Schedule keys:', Object.keys(schedule));
+      console.log('[handle-host-decision] Active days:', Object.entries(schedule).filter(([, d]: any) => d.active).map(([k]) => k));
 
-      console.log(`[handle-host-decision] Daily rides created for subscription ${subscriptionId}. Sending notifications and emails.`);
+      // Create daily_rides from tomorrow through end date
+      const updatedSub = {
+        ...sub,
+        start_date: startDate.toISOString(),
+        end_date:   endDate.toISOString(),
+      };
+      await createDailyRides(subscriptionId, updatedSub, schedule);
+
+      // Create or find existing chat for this subscription
+      const chatId = await getOrCreateChat(subscriptionId, uid, sub.rider_id);
 
       await Promise.all([
         notifyRequestAccepted(rider?.expo_push_token, host?.name ?? ''),
         sendRequestAcceptedEmail({
-          to:            rider?.email ?? sub.rider_billing_email ?? '',
+          to:            sub.rider_billing_email,
           riderName:     rider?.name ?? '',
           hostName:      host?.name  ?? '',
           routeLabel:    `${home} → ${work}`,
@@ -89,9 +114,7 @@ export async function POST(req: NextRequest) {
         }),
       ]);
 
-      console.log(`[handle-host-decision] Notifications and emails sent for accepted subscription ${subscriptionId}.`);
-
-      return NextResponse.json({ result: 'accepted' });
+      return NextResponse.json({ result: 'accepted', chatId });
     }
 
     // ── Decline → refund ──────────────────────────────────────────────────────
@@ -99,8 +122,6 @@ export async function POST(req: NextRequest) {
       transaction:   sub.paystack_reference,
       merchant_note: 'Host declined the ride request',
     });
-
-    console.log('[handle-host-decision] Refund response:', refundRes);
 
     if (!refundRes.status) {
       console.error('[handle-host-decision] Refund failed', refundRes);
@@ -112,26 +133,24 @@ export async function POST(req: NextRequest) {
       refund_reference: refundRes.data?.reference ?? null,
       refunded_at:      new Date().toISOString(),
     });
-    console.log(`[handle-host-decision] Subscription ${subscriptionId} marked as rejected with refund reference ${refundRes.data?.reference}`);
 
     await Promise.all([
       notifyRequestDeclined(rider?.expo_push_token, host?.name ?? '', 'declined'),
       notifyRefundIssued(rider?.expo_push_token, sub.total_amount),
       sendRequestDeclinedEmail({
-        to:        host?.email ?? sub.rider_billing_email ?? '',
+        to:        sub.rider_billing_email,
         riderName: rider?.name ?? '',
         hostName:  host?.name  ?? '',
         reason:    'declined',
       }),
       sendRefundEmail({
-        to:        rider?.email ?? sub.rider_billing_email ?? '',
+        to:        sub.rider_billing_email,
         riderName: rider?.name ?? '',
         amount:    sub.total_amount,
         reference: sub.paystack_reference,
         reason:    'Host declined the ride request',
       }),
     ]);
-    console.log(`[handle-host-decision] Notified rider and host about decline and refund for subscription ${subscriptionId}`);
 
     return NextResponse.json({ result: 'declined_and_refunded' });
 
@@ -148,51 +167,109 @@ function formatTime(hhmm: string): string {
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${period}`;
 }
 
+// Returns the chatId for this subscription's conversation.
+// Creates a new chat document if one doesn't exist yet.
+// Keyed by subscription_id so retries are idempotent and
+// each subscription gets its own conversation thread.
+async function getOrCreateChat(
+  subscriptionId: string,
+  hostId:         string,
+  riderId:        string,
+): Promise<string> {
+  // Check if a chat already exists for this subscription
+  const existing = await db.collection('chats')
+    .where('subscription_id', '==', subscriptionId)
+    .limit(1)
+    .get();
+
+  if (!existing.empty) {
+    return existing.docs[0].id;
+  }
+
+  // Create a new chat
+  const chatRef = await db.collection('chats').add({
+    subscription_id: subscriptionId,
+    host_id:         hostId,
+    rider_id:        riderId,
+    participants:    [hostId, riderId],   // array for easy querying
+    created_at:      new Date().toISOString(),
+    last_message:    null,
+    last_message_at: null,
+    unread_host:     0,
+    unread_rider:    0,
+  });
+
+  return chatRef.id;
+}
+
 // Creates a daily_rides document for every active schedule day
 // between subscription start and end dates.
 // Document ID: {subscriptionId}_{YYYY-MM-DD}
+// Handles multi-batch writes for subscriptions longer than ~166 active days.
 async function createDailyRides(
   subscriptionId: string,
   sub: DocumentData,
   schedule: Record<string, { active: boolean; depart: string; return: string }>,
 ): Promise<void> {
   const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const BATCH_SIZE = 400; // Firestore max is 500, leave headroom
 
   const start = new Date(sub.start_date);
   const end   = new Date(sub.end_date);
-  const batch = db.batch();
-  let   count = 0;
+
+  let batch     = db.batch();
+  let batchCount = 0;
+  let totalCount = 0;
 
   const cursor = new Date(start);
-  while (cursor <= end && count < 200) { // cap at 200 docs per batch
-    const dayName = DAY_NAMES[cursor.getDay()];
+
+  while (cursor <= end) {
+    const dayName     = DAY_NAMES[cursor.getDay()];
     const daySchedule = schedule[dayName];
 
     if (daySchedule?.active) {
-      const dateKey = cursor.toISOString().split('T')[0]; // YYYY-MM-DD
-      const docId   = `${subscriptionId}_${dateKey}`;
-      const docRef  = db.collection('daily_rides').doc(docId);
+      // Use Lagos local date (UTC+1) rather than UTC date to avoid
+      // off-by-one errors when server runs in UTC
+      const lagosOffset = 60; // minutes
+      const lagosTime   = new Date(cursor.getTime() + lagosOffset * 60 * 1000);
+      const dateKey     = lagosTime.toISOString().split('T')[0]; // YYYY-MM-DD in Lagos time
+
+      const docId  = `${subscriptionId}_${dateKey}`;
+      const docRef = db.collection('daily_rides').doc(docId);
 
       batch.set(docRef, {
-        subscription_id:  subscriptionId,
-        host_id:          sub.host_id,
-        rider_id:         sub.rider_id,
-        ride_date:        dateKey,
-        pickup_stop:      sub.pickup_stop ?? '',
-        status:           'pending',        // pending → confirmed once both confirm
-        rider_confirmed:  false,
-        host_confirmed:   false,
-        created_at:       new Date().toISOString(),
-      }, { merge: true }); // merge so re-runs don't overwrite existing confirmations
+        subscription_id: subscriptionId,
+        host_id:         sub.host_id,
+        rider_id:        sub.rider_id,
+        ride_date:       dateKey,
+        pickup_stop:     sub.pickup_stop ?? '',
+        status:          'pending',
+        rider_confirmed: false,
+        host_confirmed:  false,
+        created_at:      new Date().toISOString(),
+      }, { merge: true }); // merge preserves any existing confirmations on retry
 
-      count++;
+      batchCount++;
+      totalCount++;
+
+      // Commit and start a fresh batch when approaching the limit
+      if (batchCount >= BATCH_SIZE) {
+        await batch.commit();
+        batch      = db.batch();
+        batchCount = 0;
+      }
     }
 
     cursor.setDate(cursor.getDate() + 1);
   }
 
-  if (count > 0) {
+  // Commit any remaining writes
+  if (batchCount > 0) {
     await batch.commit();
-    console.log(`[handle-host-decision] Created ${count} daily_rides for subscription ${subscriptionId}`);
+  }
+
+  console.log(`[createDailyRides] Created ${totalCount} daily_rides for subscription ${subscriptionId}`);
+  if (totalCount === 0) {
+    console.warn(`[createDailyRides] Zero docs created — schedule may be empty or all days inactive. Schedule:`, JSON.stringify(schedule));
   }
 }
