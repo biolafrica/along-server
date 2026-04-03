@@ -1,6 +1,10 @@
 {
   "crons": [
     {
+      "path": "/api/cron/expire-pending-requests",
+      "schedule": "0 * * * *"
+    },
+    {
       "path": "/api/cron/complete-expired-subscriptions",
       "schedule": "0 0 * * *"
     }
