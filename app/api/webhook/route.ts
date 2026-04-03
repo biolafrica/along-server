@@ -54,6 +54,7 @@ export async function POST(req: NextRequest) {
         console.log(`[webhook] Notifying rider ${sub.rider_id} about successful renewal charge of ${sub.total_amount} for host ${hostDoc.data()?.name}`);
 
         await notifyRenewalCharged(
+          riderDoc.data()?.id ?? '',
           riderDoc.data()?.expo_push_token,
           sub.total_amount,
           hostDoc.data()?.name ?? '',
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
         console.log(`[webhook] Notifying rider ${sub.rider_id} about failed renewal charge for host ${hostDoc.data()?.name}`);
         
         await notifyRenewalFailed(
+          riderDoc.data()?.id ?? '',
           riderDoc.data()?.expo_push_token,
           hostDoc.data()?.name ?? '',
         );

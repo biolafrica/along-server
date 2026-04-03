@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
     const rider    = riderDoc.data();
 
     await Promise.all([
-      notifyRefundIssued(rider?.expo_push_token, sub.total_amount),
+      notifyRefundIssued(uid,rider?.expo_push_token, sub.total_amount),
       sendRefundEmail({
         to:        sub.rider_billing_email,
         riderName: rider?.name ?? '',

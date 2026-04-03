@@ -116,7 +116,7 @@ export async function POST(req: NextRequest) {
     console.log('[verify-payment] Notifying parties...');
     await Promise.all([
       // Rider: payment received
-      notifyPaymentReceived(rider?.expo_push_token, totalAmount),
+      notifyPaymentReceived(uid,rider?.expo_push_token, totalAmount),
       sendPaymentConfirmationEmail({
         to:             riderEmail,
         riderName:      rider?.name ?? '',
@@ -126,9 +126,9 @@ export async function POST(req: NextRequest) {
         durationMonths,
       }),
       // Host: new request
-      notifyNewRideRequest(host?.expo_push_token, rider?.name ?? 'A rider', durationMonths),
+      notifyNewRideRequest(hostId, host?.expo_push_token, rider?.name ?? 'A rider', durationMonths),
       sendRideRequestEmail({
-        to:             host?.paystack_email ?? host?.work_email ?? '',
+        to:             host?.email ?? '',
         hostName:       host?.name ?? '',
         riderName:      rider?.name ?? '',
         pickupStop:     pickupStop ?? '—',

@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
       const chatId = await getOrCreateChat(subscriptionId, uid, sub.rider_id);
 
       await Promise.all([
-        notifyRequestAccepted(rider?.expo_push_token, host?.name ?? ''),
+        notifyRequestAccepted(sub.rider_id, rider?.expo_push_token, host?.name ?? ''),
         sendRequestAcceptedEmail({
           to:            sub.rider_billing_email,
           riderName:     rider?.name ?? '',
@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
           pickupStop:    sub.pickup_stop ?? '—',
           departureTime: depTime,
         }),
-        notifyEarningsCredited(host?.expo_push_token, sub.host_earning, rider?.name ?? ''),
+        notifyEarningsCredited(uid, host?.expo_push_token, sub.host_earning, rider?.name ?? ''),
         sendEarningsCreditedEmail({
           to:        host?.email ?? '',
           hostName:  host?.name ?? '',
@@ -135,8 +135,8 @@ export async function POST(req: NextRequest) {
     });
 
     await Promise.all([
-      notifyRequestDeclined(rider?.expo_push_token, host?.name ?? '', 'declined'),
-      notifyRefundIssued(rider?.expo_push_token, sub.total_amount),
+      notifyRequestDeclined(sub.rider_id, rider?.expo_push_token, host?.name ?? '', 'declined'),
+      notifyRefundIssued(sub.rider_id, rider?.expo_push_token, sub.total_amount),
       sendRequestDeclinedEmail({
         to:        sub.rider_billing_email,
         riderName: rider?.name ?? '',
