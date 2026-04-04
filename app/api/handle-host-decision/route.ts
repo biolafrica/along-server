@@ -15,6 +15,7 @@ import {
   notifyRefundIssued,
   notifyEarningsCredited,
 } from '@/lib/notification';
+import { formatTime } from '@/utils/formatter';
 
 export async function POST(req: NextRequest) {
   try {
@@ -161,16 +162,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-function formatTime(hhmm: string): string {
-  const [h, m] = hhmm.split(':').map(Number);
-  const period = h >= 12 ? 'PM' : 'AM';
-  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${period}`;
-}
 
-// Returns the chatId for this subscription's conversation.
-// Creates a new chat document if one doesn't exist yet.
-// Keyed by subscription_id so retries are idempotent and
-// each subscription gets its own conversation thread.
 async function getOrCreateChat(
   subscriptionId: string,
   hostId:         string,
@@ -202,10 +194,6 @@ async function getOrCreateChat(
   return chatRef.id;
 }
 
-// Creates a daily_rides document for every active schedule day
-// between subscription start and end dates.
-// Document ID: {subscriptionId}_{YYYY-MM-DD}
-// Handles multi-batch writes for subscriptions longer than ~166 active days.
 async function createDailyRides(
   subscriptionId: string,
   sub: DocumentData,

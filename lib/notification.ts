@@ -11,7 +11,6 @@ interface PushMessage {
   sound: 'default';
 }
 
-// ─── Core helpers ─────────────────────────────────────────────────────────────
 
 async function sendPush(messages: PushMessage[]): Promise<void> {
   const valid = messages.filter(m => m.to.startsWith('ExponentPushToken'));
@@ -146,7 +145,7 @@ export const notifyRideReminder = (userId: string, token: string | null, role: '
     title: 'Ride reminder',
     body:  role === 'host'
       ? `You have riders to pick up at ${departureTime}.`
-      : `Your pickup at ${pickupStop ?? 'your stop'} is at ${departureTime}.`,
+      : `Kindly reconfirm your pickup at ${pickupStop ?? 'your stop'} is at ${departureTime}.`,
     type: 'ride_reminder',
     url:  '/(tabs)/rides',
   });
