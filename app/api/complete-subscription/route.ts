@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { paystackPost } from '@/lib/paystack';
-import { notifyRenewalCharged} from '@/lib/notification';
+import { notifyRenewalCharged, notifyRenewalReminder } from '@/lib/notification';
+import { sendSubscriptionCompletedEmail } from '@/lib/email';
 
 
 export async function POST(req: NextRequest) {
@@ -36,15 +37,61 @@ export async function POST(req: NextRequest) {
       completed_at: FieldValue.serverTimestamp(),
     });
 
-    const hostDoc  = await db.collection('users').doc(sub.host_id).get();
-    const hostData = hostDoc.data();
+     const [hostDoc, riderDoc] = await Promise.all([
+      db.collection('users').doc(sub.host_id).get(),
+      db.collection('users').doc(sub.rider_id).get(),
+    ]);
+    const hostData  = hostDoc.data();
+    const riderData = riderDoc.data();
+ 
+    const period    = new Date(sub.end_date).toLocaleString('en-NG', { month: 'long', year: 'numeric' });
+    const startFmt  = new Date(sub.start_date).toLocaleDateString('en-NG', { dateStyle: 'long' });
+    const endFmt    = new Date(sub.end_date).toLocaleDateString('en-NG',   { dateStyle: 'long' });
+ 
+
+ 
+    await Promise.all([
+      // Rider completion notification
+      riderData?.expo_push_token && notifyRenewalReminder(
+        sub.rider_id,
+        riderData.expo_push_token,
+        hostData?.name ?? 'Your host',
+        sub.end_date,
+      ),
+      // Rider completion email
+      riderData?.email && sendSubscriptionCompletedEmail({
+        to:        riderData.email,
+        name:      riderData.name ?? '',
+        role:      'rider',
+        period,
+        startDate: startFmt,
+        endDate:   endFmt,
+        amount:    sub.total_amount,
+      }),
+      // Host completion email
+      hostData?.email && sendSubscriptionCompletedEmail({
+        to:        hostData.email,
+        name:      hostData.name ?? '',
+        role:      'host',
+        period,
+        startDate: startFmt,
+        endDate:   endFmt,
+        amount:    sub.host_earning,
+      }),
+    ]);
+ 
+
+
+
+
+
+  
 
     if (!hostData?.paystack_recipient_code) {
       console.warn(`[complete-subscription] Host ${sub.host_id} has no recipient_code — skipping transfer`);
       return NextResponse.json({ result: 'completed_no_transfer', reason: 'no_recipient_code' });
     }
 
-    const period    = new Date(sub.end_date).toLocaleString('en-NG', { month: 'long', year: 'numeric' });
     const reference = `along_payout_${subscriptionId}_${Date.now()}`;
 
     const transferRes = await paystackPost('/transfer', {

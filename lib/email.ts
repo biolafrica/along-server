@@ -179,6 +179,26 @@ export function sendRenewalReminderEmail(params: {
   );
 }
 
+export function sendSubscriptionCompletedEmail(params: {
+  to: string; name: string; role:string; period: string;startDate: string; endDate: string; amount: number;
+}) {
+  const { to, endDate, name, role, period, startDate, amount } = params;
+  const first = name.split(' ')[0];
+  const end   = new Date(endDate).toLocaleDateString('en-NG', { dateStyle: 'long' });
+  const start   = new Date(startDate).toLocaleDateString('en-NG', { dateStyle: 'long' });
+
+  const intro = role === 'host' ? `<p>Hi ${first}, your subscription for ${period} between ${start} and ${end} has been completed successfully. You've earned ₦${amount.toLocaleString()} from this subscription.</p>` : `<p>Hi ${first}, your subscription for ${period} between ${start} and ${end} has been completed successfully. You've paid ₦${amount.toLocaleString()} for this subscription.</p>`;
+
+  return send(to, `Your Along subscription for ${period} has ended`,
+    template(`Subscription completed`,
+      `<p>${intro}</p>
+        <p>${role === 'host' ? `You've earned ₦${amount.toLocaleString()} from this subscription.` : `You've paid ₦${amount.toLocaleString()} for this subscription.`}</p>
+        <p>Thank you for being part of the Along community.</p>`,
+      { label: 'Check Details', url: process.env.NEXT_PUBLIC_APP_URL! }
+    )
+  );
+}
+
 
 export function sendHostOnlineEmail(params: {
   to: string[]; hostName: string; routeLabel: string; monthlyPrice: number;
