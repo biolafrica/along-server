@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { db } from '@/lib/firebase-admin';
-import { notifyEarningsCredited, notifyRenewalCharged, notifyRenewalFailed } from '@/lib/notification';
 import { FieldValue } from 'firebase-admin/firestore';
-import { sendEarningsCreditedEmail } from '@/lib/email';
+import { enqueue } from '@/lib/queue';
+import { logger, withApiLogging, dbOperation } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(req: NextRequest) {
+async function handler(req: NextRequest): Promise<NextResponse> {
   const rawBody   = await req.text();
   const signature = req.headers.get('x-paystack-signature') ?? '';
 
@@ -17,25 +17,28 @@ export async function POST(req: NextRequest) {
     .digest('hex');
 
   if (hash !== signature) {
-    console.warn('[webhook] Invalid signature');
+    logger.warn('webhook_invalid_signature', { layer: 'request' });
     return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
   }
 
   const event     = JSON.parse(rawBody);
   const eventType = event.event as string;
-  console.log('[webhook] Event:', eventType, event.data?.reference ?? '');
+
+  logger.info('webhook_received', { eventType, reference: event.data?.reference ?? '' });
 
   switch (eventType) {
-    
+
     case 'charge.success': {
       const { reference, metadata } = event.data;
-
       if (!metadata?.renewal || !metadata?.subscription_id) break;
 
       const subRef  = db.collection('subscriptions').doc(metadata.subscription_id);
-      const subSnap = await subRef.get();
+      const subSnap = await dbOperation('firestore_read', 'subscriptions', metadata.subscription_id, () =>
+        subRef.get()
+      );
+
       if (!subSnap.exists) {
-        console.warn('[webhook] charge.success — subscription not found:', metadata.subscription_id);
+        logger.warn('webhook_subscription_not_found', { eventType, subscriptionId: metadata.subscription_id });
         break;
       }
 
@@ -43,54 +46,75 @@ export async function POST(req: NextRequest) {
       const newEnd = new Date(sub.end_date);
       newEnd.setMonth(newEnd.getMonth() + (sub.duration_months ?? 1));
 
-      await subRef.update({
-        end_date:              newEnd.toISOString(),
-        last_charged_at:       new Date().toISOString(),
-        last_charge_reference: reference,
-        status:                'active',
-      });
-
-      const [riderDoc, hostDoc] = await Promise.all([
-        db.collection('users').doc(sub.rider_id).get(),
-        db.collection('users').doc(sub.host_id).get(),
-      ]);
-
-      await notifyRenewalCharged(
-        sub.rider_id,
-        riderDoc.data()?.expo_push_token ?? null,
-        sub.total_amount,
-        hostDoc.data()?.name ?? '',
+      await dbOperation('firestore_write', 'subscriptions', metadata.subscription_id, () =>
+        subRef.update({
+          end_date:              newEnd.toISOString(),
+          last_charged_at:       new Date().toISOString(),
+          last_charge_reference: reference,
+          status:                'active',
+        })
       );
 
-      console.log('[webhook] Renewal extended to', newEnd.toISOString(), 'for', metadata.subscription_id);
+      const [riderDoc, hostDoc] = await Promise.all([
+        dbOperation('firestore_read', 'users', sub.rider_id, () =>
+          db.collection('users').doc(sub.rider_id).get()
+        ),
+        dbOperation('firestore_read', 'users', sub.host_id, () =>
+          db.collection('users').doc(sub.host_id).get()
+        ),
+      ]);
+
+      await enqueue('send_notification', {
+        type:     'renewal_charged',
+        userId:   sub.rider_id,
+        token:    riderDoc.data()?.expo_push_token ?? null,
+        amount:   sub.total_amount,
+        hostName: hostDoc.data()?.name ?? '',
+      });
+
+      logger.info('renewal_extended', {
+        subscriptionId: metadata.subscription_id,
+        newEndDate:     newEnd.toISOString(),
+        reference,
+      });
       break;
     }
 
     case 'charge.failed': {
       const { metadata } = event.data;
-
       if (!metadata?.renewal || !metadata?.subscription_id) break;
 
       const subRef  = db.collection('subscriptions').doc(metadata.subscription_id);
-      const subSnap = await subRef.get();
+      const subSnap = await dbOperation('firestore_read', 'subscriptions', metadata.subscription_id, () =>
+        subRef.get()
+      );
       if (!subSnap.exists) break;
 
       const sub = subSnap.data()!;
 
-      await subRef.update({ status: 'payment_failed' });
-
-      const [riderDoc, hostDoc] = await Promise.all([
-        db.collection('users').doc(sub.rider_id).get(),
-        db.collection('users').doc(sub.host_id).get(),
-      ]);
-
-      await notifyRenewalFailed(
-        sub.rider_id,
-        riderDoc.data()?.expo_push_token ?? null,
-        hostDoc.data()?.name ?? '',
+      await dbOperation('firestore_write', 'subscriptions', metadata.subscription_id, () =>
+        subRef.update({ status: 'payment_failed' })
       );
 
-      console.log('[webhook] Renewal failed for', metadata.subscription_id);
+      const [riderDoc, hostDoc] = await Promise.all([
+        dbOperation('firestore_read', 'users', sub.rider_id, () =>
+          db.collection('users').doc(sub.rider_id).get()
+        ),
+        dbOperation('firestore_read', 'users', sub.host_id, () =>
+          db.collection('users').doc(sub.host_id).get()
+        ),
+      ]);
+
+      await enqueue('send_notification', {
+        type:     'renewal_failed',
+        userId:   sub.rider_id,
+        token:    riderDoc.data()?.expo_push_token ?? null,
+        hostName: hostDoc.data()?.name ?? '',
+      });
+
+      logger.warn('renewal_payment_failed', {
+        subscriptionId: metadata.subscription_id,
+      }, 'warning');
       break;
     }
 
@@ -103,37 +127,46 @@ export async function POST(req: NextRequest) {
         .get();
 
       if (subSnap.empty) {
-        console.warn('[webhook] transfer.success — no subscription found for ref:', reference);
+        logger.warn('webhook_transfer_sub_not_found', { reference });
         break;
       }
 
       const subDoc = subSnap.docs[0];
       const sub    = subDoc.data();
 
-      await subDoc.ref.update({
-        transfer_status:      'success',
-        transfer_confirmed_at: FieldValue.serverTimestamp(),
-      });
+      await dbOperation('firestore_write', 'subscriptions', subDoc.id, () =>
+        subDoc.ref.update({
+          transfer_status:       'success',
+          transfer_confirmed_at: FieldValue.serverTimestamp(),
+        })
+      );
 
-      const hostDoc = await db.collection('users').doc(sub.host_id).get();
-      const host    = hostDoc.data();
+      const [hostDoc, riderDoc] = await Promise.all([
+        dbOperation('firestore_read', 'users', sub.host_id, () =>
+          db.collection('users').doc(sub.host_id).get()
+        ),
+        dbOperation('firestore_read', 'users', sub.rider_id, () =>
+          db.collection('users').doc(sub.rider_id).get()
+        ),
+      ]);
 
-      const amountNaira = Math.round(amount / 100); // kobo → naira
+      const host        = hostDoc.data();
+      const riderName   = riderDoc.data()?.name ?? 'your rider';
+      const amountNaira = Math.round(amount / 100);
       const period      = new Date(sub.end_date).toLocaleString('en-NG', {
         month: 'long', year: 'numeric',
       });
 
-      const riderDoc  = await db.collection('users').doc(sub.rider_id).get();
-      const riderName = riderDoc.data()?.name ?? 'your rider';
-
       await Promise.all([
-        notifyEarningsCredited(
-          sub.host_id,
-          host?.expo_push_token ?? null,
-          amountNaira,
+        enqueue('send_notification', {
+          type:      'earnings_credited',
+          userId:    sub.host_id,
+          token:     host?.expo_push_token ?? null,
+          amount:    amountNaira,
           riderName,
-        ),
-        host?.email && sendEarningsCreditedEmail({
+        }),
+        host?.email && enqueue('send_email', {
+          type:      'earnings_credited',
           to:        host.email,
           hostName:  host.name ?? '',
           amount:    amountNaira,
@@ -142,7 +175,13 @@ export async function POST(req: NextRequest) {
         }),
       ]);
 
-      console.log(`[webhook] Transfer confirmed: ₦${amountNaira} to ${recipient?.details?.account_name ?? 'host'} for sub ${subDoc.id}`);
+      logger.info('transfer_confirmed', {
+        subscriptionId: subDoc.id,
+        reference,
+        amountNaira,
+        hostId:         sub.host_id,
+        accountName:    recipient?.details?.account_name ?? '',
+      });
       break;
     }
 
@@ -155,40 +194,47 @@ export async function POST(req: NextRequest) {
         .get();
 
       if (subSnap.empty) {
-        console.warn('[webhook] transfer.failed — no subscription found for ref:', reference);
+        logger.warn('webhook_transfer_failed_sub_not_found', { reference });
         break;
       }
 
       const subDoc = subSnap.docs[0];
       const sub    = subDoc.data();
 
-      await subDoc.ref.update({
-        transfer_status:      'failed',
-        transfer_failure_reason: failure_reason ?? 'Unknown',
-        transfer_failed_at:   FieldValue.serverTimestamp(),
-      });
-
-      console.error(
-        `[webhook] TRANSFER FAILED for subscription ${subDoc.id}`,
-        `ref: ${reference}`,
-        `reason: ${failure_reason}`,
-        `host: ${sub.host_id}`,
-        `amount: ₦${Math.round((event.data.amount ?? 0) / 100)}`,
+      await dbOperation('firestore_write', 'subscriptions', subDoc.id, () =>
+        subDoc.ref.update({
+          transfer_status:         'failed',
+          transfer_failure_reason: failure_reason ?? 'Unknown',
+          transfer_failed_at:      FieldValue.serverTimestamp(),
+        })
       );
 
-      // An admin alert system would go here in production.
+      // Money problem — fire a fatal Sentry alert
+      logger.critical(
+        'transfer_failed',
+        new Error(failure_reason ?? 'Paystack transfer failed'),
+        {
+          subscriptionId: subDoc.id,
+          reference,
+          reason:         failure_reason,
+          hostId:         sub.host_id,
+          amount:         `₦${Math.round((event.data.amount ?? 0) / 100)}`,
+        }
+      );
       break;
     }
 
-    // Subscription status already updated when we called /refund — nothing to do here.
     case 'refund.processed': {
-      console.log('[webhook] Refund confirmed for ref:', event.data?.reference);
+      logger.info('refund_confirmed', { reference: event.data?.reference });
       break;
     }
 
     default:
-      console.log('[webhook] Unhandled event:', eventType);
+      logger.info('webhook_unhandled_event', { eventType });
   }
 
   return NextResponse.json({ received: true });
 }
+
+// Wrap with request logging — logs method, path, statusCode, durationMs
+export const POST = withApiLogging('webhook', handler as any);
