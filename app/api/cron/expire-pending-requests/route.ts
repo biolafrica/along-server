@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/firebase-admin';
-import { paystackPost } from '@/lib/paystack';
-import { FieldValue } from 'firebase-admin/firestore';
-import { notifyRequestDeclined, notifyRefundIssued } from '@/lib/notification';
-import { sendRequestDeclinedEmail, sendRefundEmail } from '@/lib/email';
+import { enqueue } from '@/lib/queue';
+import { logger, withApiLogging } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: NextRequest) {
+async function handler(req: NextRequest): Promise<NextResponse> {
   const authHeader = req.headers.get('authorization');
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
@@ -21,77 +19,23 @@ export async function GET(req: NextRequest) {
     .get();
 
   if (expiredSnap.empty) {
-    console.log('[cron/expire-requests] No expired requests found');
+    logger.info('cron_expire_pending_requests', { processed: 0 });
     return NextResponse.json({ processed: 0 });
   }
 
-  const results: string[] = [];
+  // Fan out — one independent job per subscription
+  await Promise.all(
+    expiredSnap.docs.map(doc =>
+      enqueue('cancel_pending_request', { subscriptionId: doc.id })
+    )
+  );
 
-  for (const subDoc of expiredSnap.docs) {
-    const sub   = subDoc.data();
-    const subId = subDoc.id;
+  logger.info('cron_expire_pending_requests', {
+    processed: expiredSnap.size,
+    subscriptionIds: expiredSnap.docs.map(d => d.id),
+  });
 
-    try {
-      const refundRes = await paystackPost('/refund', {
-        transaction:   sub.paystack_reference,
-        merchant_note: 'Auto-refunded: host did not respond within 48 hours',
-      });
-
-      if (!refundRes.status) {
-        console.error(`[cron/expire-requests] Refund failed for ${subId}:`, refundRes.message);
-        results.push(`${subId}: REFUND_FAILED — ${refundRes.message}`);
-        continue;
-      }
-
-      await subDoc.ref.update({
-        status:           'expired',
-        refund_reference: refundRes.data?.reference ?? null,
-        refund_reason:    'Host did not respond within 48 hours',
-        refunded_at:      FieldValue.serverTimestamp(),
-      });
-
-      const [riderDoc, hostDoc] = await Promise.all([
-        db.collection('users').doc(sub.rider_id).get(),
-        db.collection('users').doc(sub.host_id).get(),
-      ]);
-      const rider = riderDoc.data();
-      const host  = hostDoc.data();
-
-      await Promise.all([
-        notifyRequestDeclined(
-          sub.rider_id,
-          rider?.expo_push_token ?? null,
-          host?.name ?? 'Your host',
-          'expired',
-        ),
-        notifyRefundIssued(
-          sub.rider_id,
-          rider?.expo_push_token ?? null,
-          sub.total_amount,
-        ),
-        rider?.email && sendRequestDeclinedEmail({
-          to:        rider.email,
-          riderName: rider.name ?? '',
-          hostName:  host?.name ?? '',
-          reason:    'expired',
-        }),
-        rider?.email && sendRefundEmail({
-          to:        rider.email,
-          riderName: rider.name ?? '',
-          amount:    sub.total_amount,
-          reference: sub.paystack_reference,
-          reason:    'Host did not respond within 48 hours',
-        }),
-      ]);
-
-      results.push(`${subId}: OK — refunded ₦${sub.total_amount}`);
-      console.log(`[cron/expire-requests] Expired and refunded ${subId}`);
-
-    } catch (err: any) {
-      results.push(`${subId}: ERROR — ${err.message}`);
-      console.error(`[cron/expire-requests] Failed for ${subId}:`, err.message);
-    }
-  }
-
-  return NextResponse.json({ processed: expiredSnap.size, results });
+  return NextResponse.json({ processed: expiredSnap.size });
 }
+
+export const GET = withApiLogging('cron-expire-pending-requests', handler as any);
