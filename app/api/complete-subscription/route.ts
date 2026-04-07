@@ -79,13 +79,6 @@ export async function POST(req: NextRequest) {
         amount:    sub.host_earning,
       }),
     ]);
- 
-
-
-
-
-
-  
 
     if (!hostData?.paystack_recipient_code) {
       console.warn(`[complete-subscription] Host ${sub.host_id} has no recipient_code — skipping transfer`);
