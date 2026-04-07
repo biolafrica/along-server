@@ -3,150 +3,143 @@ import { paystackGet } from '@/lib/paystack';
 import { verifyToken } from '@/lib/auth';
 import { db } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
-import { sendPaymentConfirmationEmail, sendRideRequestEmail } from '@/lib/email';
-import { notifyPaymentReceived, notifyNewRideRequest } from '@/lib/notification';
+import { enqueue } from '@/lib/queue';
+import { logger, withApiLogging, dbOperation } from '@/lib/logger';
 
-export async function POST(req: NextRequest) {
-  try {
-    const uid = await verifyToken(req);
-    const { reference } = await req.json();
+async function handler(req: NextRequest): Promise<NextResponse> {
+  const uid = await verifyToken(req);
+  const { reference } = await req.json();
 
-    if (!reference) {
-      return NextResponse.json({ message: 'Reference required' }, { status: 400 });
-    }
+  if (!reference) {
+    return NextResponse.json({ message: 'Reference required' }, { status: 400 });
+  }
 
-    const data = await paystackGet(`/transaction/verify/${reference}`);
-    console.log('[verify-payment] Paystack response:', data);
+  const data = await paystackGet(`/transaction/verify/${reference}`);
 
-    if (data.data.status !== 'success') {
-      return NextResponse.json({ message: 'Payment was not successful' }, { status: 402 });
-    }
+  if (data.data.status !== 'success') {
+    logger.warn('verify_payment_not_successful', { reference, status: data.data.status });
+    return NextResponse.json({ message: 'Payment was not successful' }, { status: 402 });
+  }
 
-    const txn  = data.data;
-    const auth = txn.authorization;
+  const txn  = data.data;
+  const auth = txn.authorization;
+  const meta = txn.metadata ?? {};
 
-    const meta           = txn.metadata ?? {};
-    const hostId         = meta.host_id         as string;
-    const durationMonths = Number(meta.duration_months ?? 1);
-    const pickupStop     = meta.pickup_stop      as string ?? '';
-    const monthlyPrice   = Number(meta.monthly_price ?? 0);
-    const riderEmail     = txn.customer.email    as string;
- 
-    if (!hostId) {
-      return NextResponse.json({ message: 'Invalid payment metadata — host_id missing' }, { status: 400 });
-    }
+  const hostId         = meta.host_id         as string;
+  const durationMonths = Number(meta.duration_months ?? 1);
+  const pickupStop     = meta.pickup_stop      as string ?? '';
+  const monthlyPrice   = Number(meta.monthly_price ?? 0);
+  const riderEmail     = txn.customer.email    as string;
 
-    // ── 2. Store authorization on user doc ────────────────────────────────────
-    // CRITICAL: store the exact email used — Paystack requires same email
-    // to charge this authorization_code again in future months.
-    await db.collection('users').doc(uid).update({
+  if (!hostId) {
+    return NextResponse.json({ message: 'Invalid payment metadata — host_id missing' }, { status: 400 });
+  }
+
+  // CRITICAL PATH — store authorization
+  await dbOperation('firestore_write', 'users', uid, () =>
+    db.collection('users').doc(uid).update({
       paystack_authorization_code: auth.authorization_code,
       paystack_email:              txn.customer.email,
       paystack_card_last4:         auth.last4,
       paystack_card_brand:         auth.brand,
       paystack_card_bank:          auth.bank,
-    });
-
-    // ── 3. Fetch rider and host data for notification ─────────────────────────
-    const [riderDoc, hostDoc] = await Promise.all([
-      db.collection('users').doc(uid).get(),
-      db.collection('users').doc(hostId).get(),
-    ]);
-    const rider = riderDoc.data();
-    const host  = hostDoc.data();
-    console.log('[verify-payment] Rider:', rider);
-
-    // ── 4. Create subscription document as 'pending' ─────────────────────────
-    const SERVICE_FEE_RATE = 0.10;
-    const baseAmount       = monthlyPrice * durationMonths;
-    const serviceFee       = Math.round(baseAmount * SERVICE_FEE_RATE);
-    const totalAmount      = baseAmount + serviceFee;
-    const hostEarning      = baseAmount;
-
-    const startDate       = new Date();
-    const endDate         = new Date();
-    endDate.setMonth(endDate.getMonth() + durationMonths);
-
-    // 48-hour deadline for host to respond
-    const responseDeadline = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
-    console.log('[verify-payment] Creating subscription with:', {
-      hostId,
-      riderId: uid,
-      monthlyPrice,
-      durationMonths,
-      pickupStop,
-      baseAmount,
-      serviceFee,
-      totalAmount,
-      hostEarning,
-      reference,
-      authCode: auth.authorization_code,
-      riderEmail,
-      responseDeadline,
-      startDate: startDate.toISOString(),
-      endDate: endDate.toISOString(),
     })
+  );
 
+  const [riderDoc, hostDoc] = await Promise.all([
+    dbOperation('firestore_read', 'users', uid, () =>
+      db.collection('users').doc(uid).get()
+    ),
+    dbOperation('firestore_read', 'users', hostId, () =>
+      db.collection('users').doc(hostId).get()
+    ),
+  ]);
 
-    const subRef = await db.collection('subscriptions').add({
-      host_id:                 hostId,
-      rider_id:                uid,
-      status:                  'pending',
-      monthly_price:           monthlyPrice,
-      duration_months:         durationMonths,
-      pickup_stop:             pickupStop ?? '',
-      base_amount:             baseAmount,
-      service_fee:             serviceFee,
-      total_amount:            totalAmount,
-      host_earning:            hostEarning,
-      paystack_reference:      reference,
-      paystack_authorization:  auth.authorization_code,
-      rider_billing_email:     riderEmail,
-      response_deadline:       responseDeadline,
-      start_date:              startDate.toISOString(),
-      end_date:                endDate.toISOString(),
-      no_show_count:           0,
-      created_at:              FieldValue.serverTimestamp(),
-    });
+  const rider = riderDoc.data();
+  const host  = hostDoc.data();
 
-    console.log('[verify-payment] Created subscription:', subRef);
+  const SERVICE_FEE_RATE = 0.10;
+  const baseAmount       = monthlyPrice * durationMonths;
+  const serviceFee       = Math.round(baseAmount * SERVICE_FEE_RATE);
+  const totalAmount      = baseAmount + serviceFee;
+  const hostEarning      = baseAmount;
 
-    // ── 5. Notify both parties — fire and forget ──────────────────────────────
-    const deadline = responseDeadline;
-    console.log('[verify-payment] Notifying parties...');
-    await Promise.all([
-      // Rider: payment received
-      notifyPaymentReceived(uid,rider?.expo_push_token, totalAmount),
-      sendPaymentConfirmationEmail({
-        to:             riderEmail,
-        riderName:      rider?.name ?? '',
-        amount:         totalAmount,
-        reference,
-        hostName:       host?.name ?? 'your host',
-        durationMonths,
-      }),
-      // Host: new request
-      notifyNewRideRequest(hostId, host?.expo_push_token, rider?.name ?? 'A rider', durationMonths),
-      sendRideRequestEmail({
-        to:             host?.email ?? '',
-        hostName:       host?.name ?? '',
-        riderName:      rider?.name ?? '',
-        pickupStop:     pickupStop ?? '—',
-        durationMonths,
-        totalAmount,
-        deadline,
-      }),
-    ]);
+  const startDate        = new Date();
+  const endDate          = new Date();
+  endDate.setMonth(endDate.getMonth() + durationMonths);
+  const responseDeadline = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
-    return NextResponse.json({
-      verified:          true,
-      authorizationCode: auth.authorization_code,
-      subscriptionId:    subRef.id,
-    });
+  // CRITICAL PATH — create subscription
+  const subRef = await db.collection('subscriptions').add({
+    host_id:                 hostId,
+    rider_id:                uid,
+    status:                  'pending',
+    monthly_price:           monthlyPrice,
+    duration_months:         durationMonths,
+    pickup_stop:             pickupStop ?? '',
+    base_amount:             baseAmount,
+    service_fee:             serviceFee,
+    total_amount:            totalAmount,
+    host_earning:            hostEarning,
+    paystack_reference:      reference,
+    paystack_authorization:  auth.authorization_code,
+    rider_billing_email:     riderEmail,
+    response_deadline:       responseDeadline,
+    start_date:              startDate.toISOString(),
+    end_date:                endDate.toISOString(),
+    no_show_count:           0,
+    created_at:              FieldValue.serverTimestamp(),
+  });
 
-  } catch (err: any) {
-    console.error('[verify-payment]', err);
-    const status = err.message?.includes('Authorization') ? 401 : 500;
-    return NextResponse.json({ message: err.message }, { status });
-  }
+  // NON-CRITICAL — enqueue all notifications and emails
+  await Promise.all([
+    enqueue('send_notification', {
+      type:   'payment_confirmed',
+      userId: uid,
+      token:  rider?.expo_push_token ?? null,
+      amount: totalAmount,
+    }),
+    enqueue('send_email', {
+      type:           'payment_confirmation',
+      to:             riderEmail,
+      riderName:      rider?.name ?? '',
+      amount:         totalAmount,
+      reference,
+      hostName:       host?.name ?? 'your host',
+      durationMonths,
+    }),
+    enqueue('send_notification', {
+      type:           'new_request',
+      userId:         hostId,
+      token:          host?.expo_push_token ?? null,
+      riderName:      rider?.name ?? 'A rider',
+      durationMonths,
+    }),
+    host?.email && enqueue('send_email', {
+      type:           'ride_request',
+      to:             host.email,
+      hostName:       host.name ?? '',
+      riderName:      rider?.name ?? '',
+      pickupStop:     pickupStop ?? '—',
+      durationMonths,
+      totalAmount,
+      deadline:       responseDeadline,
+    }),
+  ]);
+
+  logger.info('payment_verified', {
+    subscriptionId: subRef.id,
+    riderId:        uid,
+    hostId,
+    totalAmount,
+    reference,
+  });
+
+  return NextResponse.json({
+    verified:          true,
+    authorizationCode: auth.authorization_code,
+    subscriptionId:    subRef.id,
+  });
 }
+
+export const POST = withApiLogging('verify-payment', handler as any);
