@@ -1,4 +1,13 @@
-import { CloudTasksClient } from "@google-cloud/tasks";
+// lib/queue.ts  (along-server)
+
+const PROJECT_ID = process.env.GCLOUD_PROJECT_ID  ?? "";
+const QUEUE_LOC  = process.env.QUEUE_LOCATION     ?? "europe-west1";
+const QUEUE_NAME = process.env.QUEUE_NAME         ?? "along-jobs";
+const WORKER_URL = process.env.WORKER_URL         ?? "";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types — kept in sync with along-functions/src/queue/types.ts
+// ─────────────────────────────────────────────────────────────────────────────
 
 type SendNotificationPayload =
   | { type: "account_verified";  userId: string; token: string | null | undefined; accountType: "host" | "rider" }
@@ -17,16 +26,16 @@ type SendNotificationPayload =
   | { type: "new_message";       userId: string; token: string | null | undefined; senderName: string; preview: string; chatId: string };
 
 type SendEmailPayload =
-  | { type: "welcome";               to: string;   name: string; accountType: "host" | "rider" }
-  | { type: "ride_request";          to: string;   hostName: string; riderName: string; pickupStop: string; durationMonths: number; totalAmount: number; deadline: string }
-  | { type: "request_accepted";      to: string;   riderName: string; hostName: string; routeLabel: string; pickupStop: string; departureTime: string }
-  | { type: "request_declined";      to: string;   riderName: string; hostName: string; reason: "declined" | "expired" }
-  | { type: "payment_confirmation";  to: string;   riderName: string; amount: number; reference: string; hostName: string; durationMonths: number }
-  | { type: "refund";                to: string;   riderName: string; amount: number; reference: string; reason: string }
-  | { type: "earnings_credited";     to: string;   hostName: string; amount: number; riderName: string; period: string }
-  | { type: "renewal_reminder";      to: string;   riderName: string; hostName: string; endDate: string }
-  | { type: "subscription_completed"; to: string;  name: string; role: "host" | "rider"; period: string; startDate: string; endDate: string; amount: number }
-  | { type: "host_online";           to: string[]; hostName: string; routeLabel: string; monthlyPrice: number };
+  | { type: "welcome";                to: string;   name: string; accountType: "host" | "rider" }
+  | { type: "ride_request";           to: string;   hostName: string; riderName: string; pickupStop: string; durationMonths: number; totalAmount: number; deadline: string }
+  | { type: "request_accepted";       to: string;   riderName: string; hostName: string; routeLabel: string; pickupStop: string; departureTime: string }
+  | { type: "request_declined";       to: string;   riderName: string; hostName: string; reason: "declined" | "expired" }
+  | { type: "payment_confirmation";   to: string;   riderName: string; amount: number; reference: string; hostName: string; durationMonths: number }
+  | { type: "refund";                 to: string;   riderName: string; amount: number; reference: string; reason: string }
+  | { type: "earnings_credited";      to: string;   hostName: string; amount: number; riderName: string; period: string }
+  | { type: "renewal_reminder";       to: string;   riderName: string; hostName: string; endDate: string }
+  | { type: "subscription_completed"; to: string;   name: string; role: "host" | "rider"; period: string; startDate: string; endDate: string; amount: number }
+  | { type: "host_online";            to: string[]; hostName: string; routeLabel: string; monthlyPrice: number };
 
 interface JobPayloadMap {
   send_notification:      SendNotificationPayload;
@@ -39,24 +48,30 @@ interface JobPayloadMap {
 
 type JobName = keyof JobPayloadMap;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Build CloudTasksClient options
+// - Locally: gcloud auth application-default login provides credentials
+// - Vercel: GOOGLE_APPLICATION_CREDENTIALS_JSON env var holds service account JSON
+// ─────────────────────────────────────────────────────────────────────────────
 
-const PROJECT_ID     = process.env.GCLOUD_PROJECT_ID  ?? "";
-const QUEUE_LOCATION = process.env.QUEUE_LOCATION     ?? "europe-west1";
-const QUEUE_NAME     = process.env.QUEUE_NAME         ?? "along-jobs";
-const WORKER_URL     = process.env.WORKER_URL         ?? ""; 
-
-// Lazy client
-let _client: CloudTasksClient | null = null;
-
-function getClient(): CloudTasksClient {
-  if (!_client) _client = new CloudTasksClient();
-  return _client;
+function getClientOptions() {
+  const credJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+  if (credJson) {
+    try {
+      const credentials = JSON.parse(credJson);
+      return { credentials };
+    } catch {
+      console.error("[Queue] Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON");
+    }
+  }
+  // Falls back to application default credentials (gcloud auth locally,
+  // or Workload Identity on GCP-hosted environments)
+  return {};
 }
 
-// enqueue<N>
-// Identical interface to along-functions enqueue() — swap one import and done.
-// Non-fatal: a failed enqueue never throws. Critical Firestore writes already
-
+// ─────────────────────────────────────────────────────────────────────────────
+// enqueue
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function enqueue<N extends JobName>(
   name: N,
@@ -67,27 +82,29 @@ export async function enqueue<N extends JobName>(
     return;
   }
 
-  const client    = getClient();
-  const queuePath = client.queuePath(PROJECT_ID, QUEUE_LOCATION, QUEUE_NAME);
-
-  const envelope = {
-    name,
-    payload,
-    enqueuedAt: new Date().toISOString(),
-  };
-
-  const task = {
-    httpRequest: {
-      httpMethod: "POST" as const,
-      url:        WORKER_URL,
-      headers:    { "Content-Type": "application/json" },
-      body:       Buffer.from(JSON.stringify(envelope)).toString("base64"),
-    },
-  };
-
   try {
+    const { CloudTasksClient } = await import("@google-cloud/tasks");
+    const client    = new CloudTasksClient(getClientOptions());
+    const queuePath = client.queuePath(PROJECT_ID, QUEUE_LOC, QUEUE_NAME);
+
+    const envelope = {
+      name,
+      payload,
+      enqueuedAt: new Date().toISOString(),
+    };
+
+    const task = {
+      httpRequest: {
+        httpMethod: "POST" as const,
+        url:        WORKER_URL,
+        headers:    { "Content-Type": "application/json" },
+        body:       Buffer.from(JSON.stringify(envelope)).toString("base64"),
+      },
+    };
+
     await client.createTask({ parent: queuePath, task });
     console.log(`[Queue] Enqueued '${name}'`);
+
   } catch (err: any) {
     console.error(`[Queue] Failed to enqueue '${name}':`, err.message);
   }
