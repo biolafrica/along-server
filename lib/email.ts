@@ -212,3 +212,18 @@ export function sendHostOnlineEmail(params: {
     )
   );
 }
+
+
+//change content later
+export function sendRideCompletedEmail(params: {
+  to: string[]; name: string; role: string; date: string; otherName: string;
+}) {
+  const { to, name, role, date, otherName } = params;
+  return send(to, `A host on your route just came online`,
+    template(`New host available`,
+      `<p><strong>${name}</strong> is now offering rides on <strong>${role}</strong> for <strong>₦${date.toLocaleString()}/month</strong>.</p>
+       <p style="font-size:13px;">Slots fill up fast — request early.</p>`,
+      { label: 'View host', url: process.env.NEXT_PUBLIC_APP_URL! }
+    )
+  );
+}
