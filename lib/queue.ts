@@ -1,13 +1,10 @@
-// lib/queue.ts  (along-server)
 
+ 
 const PROJECT_ID = process.env.GCLOUD_PROJECT_ID  ?? "";
 const QUEUE_LOC  = process.env.QUEUE_LOCATION     ?? "europe-west1";
 const QUEUE_NAME = process.env.QUEUE_NAME         ?? "along-jobs";
 const WORKER_URL = process.env.WORKER_URL         ?? "";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types — kept in sync with along-functions/src/queue/types.ts
-// ─────────────────────────────────────────────────────────────────────────────
+ 
 
 type SendNotificationPayload =
   | { type: "account_verified";  userId: string; token: string | null | undefined; accountType: "host" | "rider" }
@@ -23,8 +20,12 @@ type SendNotificationPayload =
   | { type: "host_online";       users: { userId: string; token: string | null | undefined }[]; hostName: string; monthlyPrice: number }
   | { type: "renewal_charged";   userId: string; token: string | null | undefined; amount: number; hostName: string }
   | { type: "renewal_failed";    userId: string; token: string | null | undefined; hostName: string }
-  | { type: "new_message";       userId: string; token: string | null | undefined; senderName: string; preview: string; chatId: string };
-
+  | { type: "new_message";            userId: string; token: string | null | undefined; senderName: string; preview: string; chatId: string }
+  | { type: "rider_confirmed_pickup"; userId: string; token: string | null | undefined; riderName: string; pickupStop: string }
+  | { type: "host_confirmed_pickup";  userId: string; token: string | null | undefined; hostName: string }
+  | { type: "no_show";                userId: string; token: string | null | undefined; hostName: string; noShowCount: number; maxNoShows: number }
+  | { type: "bank_account_required";  userId: string; token: string | null | undefined };
+ 
 type SendEmailPayload =
   | { type: "welcome";                to: string;   name: string; accountType: "host" | "rider" }
   | { type: "ride_request";           to: string;   hostName: string; riderName: string; pickupStop: string; durationMonths: number; totalAmount: number; deadline: string }
@@ -35,7 +36,11 @@ type SendEmailPayload =
   | { type: "earnings_credited";      to: string;   hostName: string; amount: number; riderName: string; period: string }
   | { type: "renewal_reminder";       to: string;   riderName: string; hostName: string; endDate: string }
   | { type: "subscription_completed"; to: string;   name: string; role: "host" | "rider"; period: string; startDate: string; endDate: string; amount: number }
-  | { type: "host_online";            to: string[]; hostName: string; routeLabel: string; monthlyPrice: number };
+  | { type: "host_online";            to: string[]; hostName: string; routeLabel: string; monthlyPrice: number }
+  | { type: "rider_trip_confirmed"; to: string; riderName: string; hostName: string, pickupStop: string; departureTime: string }
+  | { type: "host_pickup_confirmed"; to: string; riderName: string; hostName: string }
+  | { type: "no_show";            to: string; riderName: string; hostName: string; noShowCount: number, maxNoShows: number };
+
 
 interface JobPayloadMap {
   send_notification:      SendNotificationPayload;
@@ -45,15 +50,10 @@ interface JobPayloadMap {
   send_ride_reminder:     { rideId: string };
   sync_host_live_status:  { hostId: string };
 }
-
+ 
 type JobName = keyof JobPayloadMap;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Build CloudTasksClient options
-// - Locally: gcloud auth application-default login provides credentials
-// - Vercel: GOOGLE_APPLICATION_CREDENTIALS_JSON env var holds service account JSON
-// ─────────────────────────────────────────────────────────────────────────────
-
+ 
+ 
 function getClientOptions() {
   const credJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
   if (credJson) {
@@ -69,10 +69,6 @@ function getClientOptions() {
   return {};
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// enqueue
-// ─────────────────────────────────────────────────────────────────────────────
-
 export async function enqueue<N extends JobName>(
   name: N,
   payload: JobPayloadMap[N]
@@ -81,18 +77,18 @@ export async function enqueue<N extends JobName>(
     console.warn(`[Queue] Missing WORKER_URL or GCLOUD_PROJECT_ID — job '${name}' dropped`);
     return;
   }
-
+ 
   try {
     const { CloudTasksClient } = await import("@google-cloud/tasks");
     const client    = new CloudTasksClient(getClientOptions());
     const queuePath = client.queuePath(PROJECT_ID, QUEUE_LOC, QUEUE_NAME);
-
+ 
     const envelope = {
       name,
       payload,
       enqueuedAt: new Date().toISOString(),
     };
-
+ 
     const task = {
       httpRequest: {
         httpMethod: "POST" as const,
@@ -101,11 +97,12 @@ export async function enqueue<N extends JobName>(
         body:       Buffer.from(JSON.stringify(envelope)).toString("base64"),
       },
     };
-
+ 
     await client.createTask({ parent: queuePath, task });
     console.log(`[Queue] Enqueued '${name}'`);
-
+ 
   } catch (err: any) {
     console.error(`[Queue] Failed to enqueue '${name}':`, err.message);
   }
 }
+ 

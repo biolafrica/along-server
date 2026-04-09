@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
-import { notifyAccountVerified } from '@/lib/notification';
-import { sendWelcomeEmail } from '@/lib/email';
-
-// GET — called when user clicks the verification link in their email.
-// Validates the token, marks the user as verified, redirects to a success page.
+import { enqueue } from '@/lib/queue';
+import { logger, dbOperation } from '@/lib/logger';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -18,7 +15,9 @@ export async function GET(req: NextRequest) {
 
   try {
     const userRef  = db.collection('users').doc(uid);
-    const userSnap = await userRef.get();
+    const userSnap = await dbOperation('firestore_read', 'users', uid, () =>
+      userRef.get()
+    );
 
     if (!userSnap.exists) {
       return redirectToApp('error', 'Account not found.');
@@ -26,57 +25,59 @@ export async function GET(req: NextRequest) {
 
     const user = userSnap.data()!;
 
-    // Check token matches
     if (user.verification_token !== token) {
       return redirectToApp('error', 'Invalid or already used verification link.');
     }
 
-    // Check token hasn't expired
     const expiresAt = new Date(user.verification_token_expires_at ?? 0);
     if (new Date() > expiresAt) {
       return redirectToApp('error', 'This verification link has expired. Please request a new one.');
     }
 
-    // Check not already verified (idempotent — safe to call twice)
     if (user.verification_status === 'verified') {
       return redirectToApp('success', 'already_verified');
     }
 
-    // ── Mark as verified ──────────────────────────────────────────────────────
-    await userRef.update({
-      verification_status:           'verified',
-      verified_at:                   FieldValue.serverTimestamp(),
-      // Clear the token so it can't be reused
-      verification_token:            FieldValue.delete(),
-      verification_token_expires_at: FieldValue.delete(),
-      verification_token_email:      FieldValue.delete(),
-    });
+    // CRITICAL PATH — mark verified
+    await dbOperation('firestore_write', 'users', uid, () =>
+      userRef.update({
+        verification_status:           'verified',
+        verified_at:                   FieldValue.serverTimestamp(),
+        verification_token:            FieldValue.delete(),
+        verification_token_expires_at: FieldValue.delete(),
+        verification_token_email:      FieldValue.delete(),
+      })
+    );
 
-    // ── Send welcome notification ─────────────────────────────────────────────
     const accountType = user.account_type as 'host' | 'rider';
+
+    // NON-CRITICAL — enqueue welcome notification + email
     await Promise.all([
-      notifyAccountVerified(uid, user.expo_push_token ?? null, accountType),
-      user.email && sendWelcomeEmail(user.email, user.name ?? '', accountType),
+      enqueue('send_notification', {
+        type:        'account_verified',
+        userId:      uid,
+        token:       user.expo_push_token ?? null,
+        accountType,
+      }),
+      user.email && enqueue('send_email', {
+        type:        'welcome',
+        to:          user.email,
+        name:        user.name ?? '',
+        accountType,
+      }),
     ]);
 
-    // implement  send welcome email as well(very important have atemplate already)
-
-    console.log(`[verify-workplace] Verified uid ${uid} (${accountType})`);
+    logger.info('workplace_verified', { uid, accountType });
     return redirectToApp('success', accountType);
 
   } catch (err: any) {
-    console.error('[verify-workplace]', err);
+    logger.error('verify_workplace_failed', err, { uid });
     return redirectToApp('error', 'Something went wrong. Please try again.');
   }
 }
 
-// Redirects back to the app using the deep link scheme.
-// The app handles along://verify?status=success and shows the right screen.
 function redirectToApp(status: 'success' | 'error', detail: string): NextResponse {
   const appDeepLink = `along://verify?status=${status}&detail=${encodeURIComponent(detail)}`;
-
-  // Also provide a web fallback in case the deep link doesn't open
-  const webFallback = `${process.env.NEXT_PUBLIC_APP_URL}/verified?status=${status}&detail=${encodeURIComponent(detail)}`;
 
   return new NextResponse(
     `<!DOCTYPE html><html><head>

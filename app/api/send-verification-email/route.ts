@@ -1,53 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth';
 import { db } from '@/lib/firebase-admin';
+import { logger, withApiLogging, dbOperation } from '@/lib/logger';
 import crypto from 'crypto';
 import { Resend } from 'resend';
 
 const resend = new Resend(process.env.RESEND_API_KEY!);
-const FROM   = 'Along <notifications@along-app.com>';
+const FROM   = 'Along <notifications@bukah.co>';
 
-// Generates a secure token, stores it on the user doc,send verification, 24hours expiration 
+async function handler(req: NextRequest): Promise<NextResponse> {
+  const uid = await verifyToken(req);
+  const { workEmail, companyName } = await req.json();
 
-export async function POST(req: NextRequest) {
-  try {
-    const uid = await verifyToken(req);
-    const { workEmail, companyName } = await req.json();
+  if (!workEmail) {
+    return NextResponse.json({ message: 'Work email required' }, { status: 400 });
+  }
 
-    if (!workEmail) {
-      return NextResponse.json({ message: 'Work email required' }, { status: 400 });
-    }
+  const token     = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-    // Generate a secure random token
-    const token     = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-
-    // Store token on user doc — we verify against this on click
-    await db.collection('users').doc(uid).update({
+  // Store token on user doc
+  await dbOperation('firestore_write', 'users', uid, () =>
+    db.collection('users').doc(uid).update({
       verification_token:            token,
       verification_token_expires_at: expiresAt,
       verification_token_email:      workEmail.trim().toLowerCase(),
-    });
+    })
+  );
 
-    // Build the verification link — points to our Next.js route
-    const verifyUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/verify-workplace?token=${token}&uid=${uid}`;
+  const verifyUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/verify-workplace?token=${token}&uid=${uid}`;
 
-    // Send the email
-    await resend.emails.send({
-      from:    FROM,
-      to:      workEmail,
-      subject: 'Verify your workplace for Along',
-      html:    buildEmail(companyName ?? 'your company', verifyUrl),
-    });
+  // Direct Resend call — not queued, must be immediate
+  await resend.emails.send({
+    from:    FROM,
+    to:      workEmail,
+    subject: 'Verify your workplace for Along',
+    html:    buildEmail(companyName ?? 'your company', verifyUrl),
+  });
 
-    console.log(`[send-verification-email] Sent to ${workEmail} for uid ${uid}`);
-    return NextResponse.json({ sent: true });
-
-  } catch (err: any) {
-    console.error('[send-verification-email]', err);
-    return NextResponse.json({ message: err.message }, { status: 500 });
-  }
+  logger.info('verification_email_sent', { uid, workEmail });
+  return NextResponse.json({ sent: true });
 }
+
+export const POST = withApiLogging('send-verification-email', handler as any);
 
 function buildEmail(companyName: string, verifyUrl: string): string {
   return `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f5f5f0;
@@ -56,11 +51,9 @@ function buildEmail(companyName: string, verifyUrl: string): string {
       <tr><td align="center">
         <table width="560" cellpadding="0" cellspacing="0" style="background:#fff;
           border-radius:16px;overflow:hidden;border:1px solid #e8e8e0;">
-
           <tr><td style="background:#14A08A;padding:24px 32px;">
             <span style="color:#fff;font-size:20px;font-weight:600;">Along</span>
           </td></tr>
-
           <tr><td style="padding:32px;">
             <h2 style="margin:0 0 16px;font-size:22px;font-weight:600;color:#1a1a18;">
               Verify your workplace
@@ -81,7 +74,6 @@ function buildEmail(companyName: string, verifyUrl: string): string {
               If you didn't create an Along account, you can safely ignore this email.
             </p>
           </td></tr>
-
           <tr><td style="padding:20px 32px;background:#f5f5f0;border-top:1px solid #e8e8e0;">
             <p style="margin:0;font-size:12px;color:#8a8a85;">
               Along — Commute with people you trust.

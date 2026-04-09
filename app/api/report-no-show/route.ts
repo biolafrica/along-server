@@ -1,84 +1,91 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth';
 import { db } from '@/lib/firebase-admin';
-import { FieldValue } from 'firebase-admin/firestore';
+import { enqueue } from '@/lib/queue';
+import { logger, withApiLogging, dbOperation } from '@/lib/logger';
 
-const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+const MAX_NO_SHOWS = 3;
 
-export async function POST(req: NextRequest) {
-  try {
-    const uid = await verifyToken(req);
-    const { subscriptionId, dailyRideId } = await req.json();
+async function handler(req: NextRequest): Promise<NextResponse> {
+  const uid = await verifyToken(req);
+  const { subscriptionId, dailyRideId } = await req.json();
 
-    if (!subscriptionId || !dailyRideId) {
-      return NextResponse.json({ message: 'Missing required fields' }, { status: 400 });
-    }
+  if (!subscriptionId || !dailyRideId) {
+    return NextResponse.json({ message: 'Missing required fields' }, { status: 400 });
+  }
 
-    // Verify caller is the host
-    const subSnap = await db.collection('subscriptions').doc(subscriptionId).get();
-    if (!subSnap.exists) {
-      return NextResponse.json({ message: 'Subscription not found' }, { status: 404 });
-    }
-    const sub = subSnap.data()!;
-    if (sub.host_id !== uid) {
-      return NextResponse.json({ message: 'Only the host can report a no-show' }, { status: 403 });
-    }
+  const subSnap = await dbOperation('firestore_read', 'subscriptions', subscriptionId, () =>
+    db.collection('subscriptions').doc(subscriptionId).get()
+  );
 
-    const currentCount = sub.no_show_count ?? 0;
+  if (!subSnap.exists) {
+    return NextResponse.json({ message: 'Subscription not found' }, { status: 404 });
+  }
 
-    // Update both docs in parallel
-    await Promise.all([
+  const sub = subSnap.data()!;
+
+  if (sub.host_id !== uid) {
+    return NextResponse.json({ message: 'Only the host can report a no-show' }, { status: 403 });
+  }
+
+  const currentCount = sub.no_show_count ?? 0;
+  const newCount     = currentCount + 1;
+
+  // CRITICAL PATH — update both docs in parallel
+  await Promise.all([
+    dbOperation('firestore_write', 'subscriptions', subscriptionId, () =>
       db.collection('subscriptions').doc(subscriptionId).update({
-        no_show_count: currentCount + 1,
-      }),
+        no_show_count: newCount,
+      })
+    ),
+    dbOperation('firestore_write', 'daily_rides', dailyRideId, () =>
       db.collection('daily_rides').doc(dailyRideId).update({
         status: 'no_show',
-      }),
-    ]);
+      })
+    ),
+  ]);
 
-    // Notify rider
-    const [riderDoc, hostDoc] = await Promise.all([
-      db.collection('users').doc(sub.rider_id).get(),
-      db.collection('users').doc(uid).get(),
-    ]);
-    const rider    = riderDoc.data();
-    const host     = hostDoc.data();
-    const newCount = currentCount + 1;
+  const [riderDoc, hostDoc] = await Promise.all([
+    dbOperation('firestore_read', 'users', sub.rider_id, () =>
+      db.collection('users').doc(sub.rider_id).get()
+    ),
+    dbOperation('firestore_read', 'users', uid, () =>
+      db.collection('users').doc(uid).get()
+    ),
+  ]);
 
-    const body = newCount >= 3
-      ? `You've been marked as a no-show by ${host?.name ?? 'your host'}. After 3 no-shows you may be removed from the route.`
-      : `You were marked as a no-show by ${host?.name ?? 'your host'} today (${newCount}/3). Please communicate in advance if you can't make it.`;
+  const rider    = riderDoc.data();
+  const host     = hostDoc.data();
 
-    // In-app notification
-    await db.collection('notifications').add({
-      user_id:    sub.rider_id,
-      type:       'no_show',
-      title:      'Marked as no-show',
-      body,
-      url:        '/(tabs)/rides',
-      read:       false,
-      created_at: FieldValue.serverTimestamp(),
-    });
+  // NON-CRITICAL — enqueue notification + email to rider
+  await Promise.all([
+    enqueue('send_notification', {
+      type:        'no_show',
+      userId:      sub.rider_id,
+      token:       rider?.expo_push_token ?? null,
+      hostName:    host?.name ?? 'Your host',
+      noShowCount: newCount,
+      maxNoShows:  MAX_NO_SHOWS,
+    }),
+    rider?.email && enqueue('send_email', {
+      type:        'no_show',
+      to:          rider.email,
+      riderName:   rider.name ?? '',
+      hostName:    host?.name ?? '',
+      noShowCount: newCount,
+      maxNoShows:  MAX_NO_SHOWS,
+    }),
+  ]);
 
-    // Push
-    if (rider?.expo_push_token?.startsWith('ExponentPushToken')) {
-      await fetch(EXPO_PUSH_URL, {
-        method:  'POST',
-        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-        body:    JSON.stringify([{
-          to:    rider.expo_push_token,
-          title: 'Marked as no-show',
-          body,
-          data:  { type: 'no_show', url: '/(tabs)/rides' },
-          sound: 'default',
-        }]),
-      }).catch(err => console.error('[report-no-show] push failed:', err.message));
-    }
+  logger.info('no_show_reported', {
+    subscriptionId,
+    dailyRideId,
+    riderId:     sub.rider_id,
+    hostId:      uid,
+    noShowCount: newCount,
+  });
 
-    return NextResponse.json({ reported: true, noShowCount: newCount });
-
-  } catch (err: any) {
-    console.error('[report-no-show]', err);
-    return NextResponse.json({ message: err.message }, { status: 500 });
-  }
+  return NextResponse.json({ reported: true, noShowCount: newCount });
 }
+
+export const POST = withApiLogging('report-no-show', handler as any);
