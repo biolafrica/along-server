@@ -14,7 +14,6 @@ async function handler(req: NextRequest): Promise<NextResponse> {
 
   // Duplicate check
   const duplicateSnap = await db.collection('subscriptions')
-    .where('host_id',  '==', hostId)
     .where('rider_id', '==', uid)
     .where('status', 'in', ['pending', 'active'])
     .limit(1)
@@ -23,8 +22,8 @@ async function handler(req: NextRequest): Promise<NextResponse> {
   if (!duplicateSnap.empty) {
     const existing = duplicateSnap.docs[0].data();
     const message  = existing.status === 'pending'
-      ? 'You already have a pending request with this host. Wait for them to respond before requesting again.'
-      : 'You already have an active subscription with this host.';
+      ? 'You already have a pending request. Wait for them to respond before requesting again.'
+      : 'You already have an active subscription.';
     logger.warn('init_payment_duplicate', { uid, hostId, status: existing.status });
     return NextResponse.json({ message, code: 'DUPLICATE_SUBSCRIPTION' }, { status: 409 });
   }

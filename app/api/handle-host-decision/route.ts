@@ -29,6 +29,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
   if (sub.host_id !== uid) {
     return NextResponse.json({ message: 'Only the host can respond to this request' }, { status: 403 });
   }
+
   if (sub.status !== 'pending') {
     return NextResponse.json({ message: 'Subscription is no longer pending' }, { status: 409 });
   }
@@ -51,6 +52,21 @@ async function handler(req: NextRequest): Promise<NextResponse> {
 
   // ── Accept ────────────────────────────────────────────────────────────────
   if (decision === 'accept') {
+
+    const capacity = hostProfile?.capacity ?? 2;
+
+    const activeSnap = await db.collection('subscriptions')
+    .where('host_id', '==', uid)
+    .where('status',  '==', 'active')
+    .get();
+
+    if (activeSnap.size >= capacity) {
+      return NextResponse.json({
+        message: `You've reached your rider capacity (${capacity}). Remove a rider before accepting new requests.`,
+        code:    'CAPACITY_REACHED',
+      }, { status: 409 });
+    }
+
     const startDate = new Date();
     startDate.setDate(startDate.getDate() + 1);
     startDate.setHours(0, 0, 0, 0);
