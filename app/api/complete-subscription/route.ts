@@ -63,21 +63,25 @@ async function handler(req: NextRequest): Promise<NextResponse> {
       token: rider?.expo_push_token ?? null, role: 'rider',
       otherName: host?.name ?? 'Your host',
     }),
+
     enqueue('send_notification', {
       type: 'ride_completed', userId: sub.host_id,
       token: host?.expo_push_token ?? null, role: 'host',
       otherName: rider?.name ?? 'Your rider',
     }),
+
     rider?.email && enqueue('send_email', {
       type: 'subscription_completed', to: rider.email,
       name: rider.name ?? '', role: 'rider',
       period, startDate, endDate, amount: sub.total_amount,
     }),
+
     host?.email && enqueue('send_email', {
       type: 'subscription_completed', to: host.email,
       name: host.name ?? '', role: 'host',
       period, startDate, endDate, amount: sub.host_earning,
     }),
+    
   ]);
 
   //Paystack transfer to host
