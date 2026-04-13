@@ -234,41 +234,55 @@ async function createDailyRides(
 ): Promise<void> {
   const DAY_NAMES  = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
   const BATCH_SIZE = 400;
-
+ 
   const start = new Date(sub.start_date);
   const end   = new Date(sub.end_date);
-
+ 
   let batch      = db.batch();
   let batchCount = 0;
   let totalCount = 0;
-
+ 
   const cursor = new Date(start);
-
+ 
   while (cursor <= end) {
     const dayName     = DAY_NAMES[cursor.getDay()];
     const daySchedule = schedule[dayName];
-
+ 
     if (daySchedule?.active) {
       const lagosTime = new Date(cursor.getTime() + 60 * 60 * 1000);
       const dateKey   = lagosTime.toISOString().split('T')[0];
       const docId     = `${subscriptionId}_${dateKey}`;
       const docRef    = db.collection('daily_rides').doc(docId);
-
+ 
       batch.set(docRef, {
         subscription_id: subscriptionId,
         host_id:         sub.host_id,
         rider_id:        sub.rider_id,
         ride_date:       dateKey,
-        pickup_stop:     sub.pickup_stop ?? '',
-        status:          'pending',
-        rider_confirmed: false,
-        host_confirmed:  false,
-        created_at:      new Date().toISOString(),
-      }, { merge: true });
 
+        pickup_stop:     sub.pickup_stop ?? '',
+        depart_time:     daySchedule.depart  ?? '',
+        return_time:     daySchedule.return  ?? '',
+ 
+        morning_rider_confirmed:    false,
+        morning_rider_confirmed_at: null,
+        morning_host_confirmed:     false,
+        morning_host_confirmed_at:  null,
+        morning_status:             'pending',  // pending | completed | no_show
+ 
+        evening_rider_confirmed:    false,
+        evening_rider_confirmed_at: null,
+        evening_host_confirmed:     false,
+        evening_host_confirmed_at:  null,
+        evening_status:             'pending',  // pending | completed | no_show
+ 
+        status:     'pending',
+        created_at: new Date().toISOString(),
+      }, { merge: true });
+ 
       batchCount++;
       totalCount++;
-
+ 
       if (batchCount >= BATCH_SIZE) {
         await batch.commit();
         batch      = db.batch();
@@ -277,11 +291,11 @@ async function createDailyRides(
     }
     cursor.setDate(cursor.getDate() + 1);
   }
-
+ 
   if (batchCount > 0) await batch.commit();
-
+ 
   logger.info('daily_rides_created', { subscriptionId, totalCount });
-
+ 
   if (totalCount === 0) {
     logger.warn('daily_rides_zero_created', {
       subscriptionId,

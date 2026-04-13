@@ -100,26 +100,26 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     logger.info('host_confirmed_pickup', { dailyRideId, hostId: uid });
   }
 
-  // Both confirmed — ride completed, notify both parties
-  if (otherAlreadyConfirmed) {
-    await Promise.all([
-      enqueue('send_notification', {
-        type:      'ride_completed',
-        userId:    ride.rider_id,
-        token:     rider?.expo_push_token ?? null,
-        role:      'rider',
-        otherName: host?.name ?? 'Your host',
-      }),
-      enqueue('send_notification', {
-        type:      'ride_completed',
-        userId:    ride.host_id,
-        token:     host?.expo_push_token ?? null,
-        role:      'host',
-        otherName: rider?.name ?? 'Your rider',
-      }),
-    ]);
-    logger.info('ride_completed', { dailyRideId });
-  }
+  // // Both confirmed — ride completed, notify both parties
+  // if (otherAlreadyConfirmed) {
+  //   await Promise.all([
+  //     enqueue('send_notification', {
+  //       type:      'ride_completed',
+  //       userId:    ride.rider_id,
+  //       token:     rider?.expo_push_token ?? null,
+  //       role:      'rider',
+  //       otherName: host?.name ?? 'Your host',
+  //     }),
+  //     enqueue('send_notification', {
+  //       type:      'ride_completed',
+  //       userId:    ride.host_id,
+  //       token:     host?.expo_push_token ?? null,
+  //       role:      'host',
+  //       otherName: rider?.name ?? 'Your rider',
+  //     }),
+  //   ]);
+  //   logger.info('ride_completed', { dailyRideId });
+  // }
 
   return NextResponse.json({ confirmed: true, completed: !!otherAlreadyConfirmed });
 }
