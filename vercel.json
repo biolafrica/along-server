@@ -8,6 +8,10 @@
       "path": "/api/cron/complete-expired-subscriptions",
       "schedule": "0 0 * * *"
     },
+    { 
+      "path": "/api/cron/evening-ride-reminders", 
+      "schedule": "0 14 * * *" 
+    },
     {
       "path": "/api/cron/ride-reminders",
       "schedule": "0 5 * * *"
