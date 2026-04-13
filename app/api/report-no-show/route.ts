@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth';
 import { db } from '@/lib/firebase-admin';
+import { FieldValue } from 'firebase-admin/firestore';
 import { enqueue } from '@/lib/queue';
 import { logger, withApiLogging, dbOperation } from '@/lib/logger';
 
@@ -8,11 +9,13 @@ const MAX_NO_SHOWS = 3;
 
 async function handler(req: NextRequest): Promise<NextResponse> {
   const uid = await verifyToken(req);
-  const { subscriptionId, dailyRideId } = await req.json();
+  const { subscriptionId, dailyRideId, leg } = await req.json();
 
   if (!subscriptionId || !dailyRideId) {
     return NextResponse.json({ message: 'Missing required fields' }, { status: 400 });
   }
+
+  const activeLeg: 'morning' | 'evening' = leg === 'evening' ? 'evening' : 'morning';
 
   const subSnap = await dbOperation('firestore_read', 'subscriptions', subscriptionId, () =>
     db.collection('subscriptions').doc(subscriptionId).get()
@@ -31,7 +34,10 @@ async function handler(req: NextRequest): Promise<NextResponse> {
   const currentCount = sub.no_show_count ?? 0;
   const newCount     = currentCount + 1;
 
-  // CRITICAL PATH — update both docs in parallel
+  const legStatusField  = `${activeLeg}_status`;
+  const legNoShowAtField = `${activeLeg}_no_show_reported_at`;
+
+  // CRITICAL PATH
   await Promise.all([
     dbOperation('firestore_write', 'subscriptions', subscriptionId, () =>
       db.collection('subscriptions').doc(subscriptionId).update({
@@ -40,7 +46,10 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     ),
     dbOperation('firestore_write', 'daily_rides', dailyRideId, () =>
       db.collection('daily_rides').doc(dailyRideId).update({
-        status: 'no_show',
+        [legStatusField]:   'no_show',
+        [legNoShowAtField]: FieldValue.serverTimestamp(),
+        // Overall status: if morning is no_show, mark day-level too for visibility
+        ...(activeLeg === 'morning' && { status: 'no_show' }),
       })
     ),
   ]);
@@ -54,10 +63,9 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     ),
   ]);
 
-  const rider    = riderDoc.data();
-  const host     = hostDoc.data();
+  const rider = riderDoc.data();
+  const host  = hostDoc.data();
 
-  // NON-CRITICAL — enqueue notification + email to rider
   await Promise.all([
     enqueue('send_notification', {
       type:        'no_show',
@@ -66,6 +74,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
       hostName:    host?.name ?? 'Your host',
       noShowCount: newCount,
       maxNoShows:  MAX_NO_SHOWS,
+      ///leg:         activeLeg,
     }),
     rider?.email && enqueue('send_email', {
       type:        'no_show',
@@ -74,15 +83,14 @@ async function handler(req: NextRequest): Promise<NextResponse> {
       hostName:    host?.name ?? '',
       noShowCount: newCount,
       maxNoShows:  MAX_NO_SHOWS,
+      //leg:         activeLeg,
     }),
   ]);
 
   logger.info('no_show_reported', {
-    subscriptionId,
-    dailyRideId,
-    riderId:     sub.rider_id,
-    hostId:      uid,
-    noShowCount: newCount,
+    subscriptionId, dailyRideId,
+    riderId: sub.rider_id, hostId: uid,
+    noShowCount: newCount, leg: activeLeg,
   });
 
   return NextResponse.json({ reported: true, noShowCount: newCount });

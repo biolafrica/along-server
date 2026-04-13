@@ -7,11 +7,13 @@ import { logger, withApiLogging, dbOperation } from '@/lib/logger';
 
 async function handler(req: NextRequest): Promise<NextResponse> {
   const uid = await verifyToken(req);
-  const { dailyRideId } = await req.json();
+  const { dailyRideId, leg } = await req.json();
 
   if (!dailyRideId) {
     return NextResponse.json({ message: 'Missing dailyRideId' }, { status: 400 });
   }
+
+  const activeLeg: 'morning' | 'evening' = leg === 'evening' ? 'evening' : 'morning';
 
   const dailyRef  = db.collection('daily_rides').doc(dailyRideId);
   const dailySnap = await dbOperation('firestore_read', 'daily_rides', dailyRideId, () =>
@@ -30,99 +32,85 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
   }
 
-  const otherAlreadyConfirmed = isHost ? ride.rider_confirmed : ride.host_confirmed;
+  // ── Determine which fields to update based on leg + role ─────────────────
+  const riderField     = `${activeLeg}_rider_confirmed`;
+  const riderAtField   = `${activeLeg}_rider_confirmed_at`;
+  const hostField      = `${activeLeg}_host_confirmed`;
+  const hostAtField    = `${activeLeg}_host_confirmed_at`;
+  const legStatusField = `${activeLeg}_status`;
 
-  const update: Record<string, any> = {
-    [isHost ? 'host_confirmed' : 'rider_confirmed']: true,
-  };
+  const myField        = isHost ? hostField    : riderField;
+  const myAtField      = isHost ? hostAtField  : riderAtField;
+  const otherField     = isHost ? riderField   : hostField;
 
-  if (otherAlreadyConfirmed) {
-    update.status       = 'completed';
-    update.completed_at = FieldValue.serverTimestamp();
+  // Already confirmed this leg — idempotent
+  if (ride[myField]) {
+    return NextResponse.json({ confirmed: true, completed: false, alreadyConfirmed: true });
   }
 
-  // CRITICAL PATH — write confirmation first
-  await dbOperation('firestore_write', 'daily_rides', dailyRideId, () =>
-    dailyRef.update(update)
-  );
+  const otherAlreadyConfirmed = ride[otherField] ?? false;
+
+  const update: Record<string, any> = {
+    [myField]:   true,
+    [myAtField]: FieldValue.serverTimestamp(),
+  };
+
+  // Both confirmed this leg → leg complete
+  if (otherAlreadyConfirmed) { update[legStatusField] = 'completed'}
+
+  // Determine overall day status after this update
+  const morningDone = activeLeg === 'morning' ? otherAlreadyConfirmed : ride.morning_status === 'completed';
+  const eveningDone = activeLeg === 'evening' ? otherAlreadyConfirmed: ride.evening_status === 'completed';
+
+  if (morningDone && eveningDone) {
+    update.status       = 'completed';
+    update.completed_at = FieldValue.serverTimestamp();
+  } else if (morningDone) {
+    update.status = 'morning_complete';
+  }
+
+  // CRITICAL PATH — write first
+  await dbOperation('firestore_write', 'daily_rides', dailyRideId, () => dailyRef.update(update));
 
   const [riderDoc, hostDoc] = await Promise.all([
-    dbOperation('firestore_read', 'users', ride.rider_id, () =>
-      db.collection('users').doc(ride.rider_id).get()
-    ),
-    dbOperation('firestore_read', 'users', ride.host_id, () =>
-      db.collection('users').doc(ride.host_id).get()
-    ),
+    dbOperation('firestore_read', 'users', ride.rider_id, () => db.collection('users').doc(ride.rider_id).get()),
+    dbOperation('firestore_read', 'users', ride.host_id, () => db.collection('users').doc(ride.host_id).get()),
   ]);
 
   const rider = riderDoc.data();
   const host  = hostDoc.data();
 
-  // NON-CRITICAL — enqueue notifications based on who confirmed
-  if (isRider && !ride.rider_confirmed) {
-    // Rider confirmed morning pickup — notify host
-    await Promise.all([
-      enqueue('send_notification', {
-        type:       'rider_confirmed_pickup',
-        userId:     ride.host_id,
-        token:      host?.expo_push_token ?? null,
-        riderName:  rider?.name ?? 'Your rider',
-        pickupStop: ride.pickup_stop ?? '',
-      }),
-      host?.email && enqueue('send_email', {
-        type:          'rider_trip_confirmed',
-        to:            host.email,
-        hostName:      host.name ?? '',
-        riderName:     rider?.name ?? '',
-        pickupStop:    ride.pickup_stop ?? '',
-        departureTime: ride.departure_time ?? '—',
-      }),
-    ]);
-    logger.info('rider_confirmed_pickup', { dailyRideId, riderId: uid });
+  const legLabel = activeLeg === 'morning' ? 'morning' : 'evening';
+
+  // NON-CRITICAL — enqueue notifications
+  if (isRider && !ride[riderField]) {
+    await enqueue('send_notification', {
+      type:       'rider_confirmed_pickup',
+      userId:     ride.host_id,
+      token:      host?.expo_push_token ?? null,
+      riderName:  rider?.name ?? 'Your rider',
+      pickupStop: ride.pickup_stop ?? '',
+      //leg:        legLabel,
+    });
+    logger.info('rider_confirmed_pickup', { dailyRideId, riderId: uid, leg: activeLeg });
   }
 
-  if (isHost && !ride.host_confirmed) {
-    // Host confirmed pickup — notify rider
-    await Promise.all([
-      enqueue('send_notification', {
-        type:     'host_confirmed_pickup',
-        userId:   ride.rider_id,
-        token:    rider?.expo_push_token ?? null,
-        hostName: host?.name ?? 'Your host',
-      }),
-      rider?.email && enqueue('send_email', {
-        type:      'host_pickup_confirmed',
-        to:        rider.email,
-        riderName: rider.name ?? '',
-        hostName:  host?.name ?? '',
-      }),
-    ]);
-    logger.info('host_confirmed_pickup', { dailyRideId, hostId: uid });
+  if (isHost && !ride[hostField]) {
+    await enqueue('send_notification', {
+      type:     'host_confirmed_pickup',
+      userId:   ride.rider_id,
+      token:    rider?.expo_push_token ?? null,
+      hostName: host?.name ?? 'Your host',
+      //leg:      legLabel,
+    });
+    logger.info('host_confirmed_pickup', { dailyRideId, hostId: uid, leg: activeLeg });
   }
 
-  // // Both confirmed — ride completed, notify both parties
-  // if (otherAlreadyConfirmed) {
-  //   await Promise.all([
-  //     enqueue('send_notification', {
-  //       type:      'ride_completed',
-  //       userId:    ride.rider_id,
-  //       token:     rider?.expo_push_token ?? null,
-  //       role:      'rider',
-  //       otherName: host?.name ?? 'Your host',
-  //     }),
-  //     enqueue('send_notification', {
-  //       type:      'ride_completed',
-  //       userId:    ride.host_id,
-  //       token:     host?.expo_push_token ?? null,
-  //       role:      'host',
-  //       otherName: rider?.name ?? 'Your rider',
-  //     }),
-  //   ]);
-  //   logger.info('ride_completed', { dailyRideId });
-  // }
-
-  return NextResponse.json({ confirmed: true, completed: !!otherAlreadyConfirmed });
+  return NextResponse.json({
+    confirmed:  true,
+    completed:  otherAlreadyConfirmed,
+    leg:        activeLeg,
+  });
 }
 
 export const POST = withApiLogging('confirm-ride', handler as any);
-
