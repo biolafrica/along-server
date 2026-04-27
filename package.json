@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@google-cloud/tasks": "^6.2.1",
     "@sentry/nextjs": "^10.47.0",
     "firebase-admin": "^13.7.0",
     "next": "16.2.2",
