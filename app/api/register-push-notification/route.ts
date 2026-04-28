@@ -12,8 +12,11 @@ async function handler(req: NextRequest): Promise<NextResponse> {
   }
  
   await dbOperation('firestore_write', 'users', uid, () =>
-    db.collection('users').doc(uid).update({ expo_push_token: token })
+    db.collection('users').doc(uid).set(
+      { expo_push_token: token,}, { merge: true }
+    )
   );
+  
  
   logger.info('push_token_registered', { userId: uid });
   return NextResponse.json({ success: true });
