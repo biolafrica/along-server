@@ -126,11 +126,10 @@ async function signJWT(input: string, key: CryptoKey): Promise<string> {
   const encoded   = new TextEncoder().encode(input);
   const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, encoded);
   return Buffer.from(signature)
-  .toString('base64')
-  .replace(/\+/g, '-')
-  .replace(/\//g, '_')
-  .replace(/=+$/, '');
-
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
 }
 
 
@@ -166,11 +165,11 @@ export async function enqueue<N extends JobName>(
           httpRequest: {
             httpMethod: 'POST',
             url:         WORKER_URL,
-            headers:    { 'Content-Type': 'application/json' },
-            body:        Buffer.from(JSON.stringify(envelope)).toString('base64'),
-            oidcToken: {
-              serviceAccountEmail: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON!).client_email,
+            headers:    {
+              'Content-Type':      'application/json',
+              'x-internal-secret': process.env.INTERNAL_SECRET ?? '',
             },
+            body: Buffer.from(JSON.stringify(envelope)).toString('base64'),
           },
         },
       }),
@@ -184,8 +183,6 @@ export async function enqueue<N extends JobName>(
     console.log(`[Queue] Enqueued '${name}'`);
 
   } catch (err: any) {
-    // Non-fatal — Firestore writes already completed before enqueue is called.
-    // Notifications/emails failing must not fail the request.
     console.error(`[Queue] Failed to enqueue '${name}':`, err.message);
   }
 }
