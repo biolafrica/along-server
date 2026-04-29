@@ -125,7 +125,12 @@ async function importPrivateKey(pem: string): Promise<CryptoKey> {
 async function signJWT(input: string, key: CryptoKey): Promise<string> {
   const encoded   = new TextEncoder().encode(input);
   const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, encoded);
-  return base64url(Buffer.from(new Uint8Array(signature)).toString('base64'));
+  return Buffer.from(signature)
+  .toString('base64')
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/, '');
+
 }
 
 
