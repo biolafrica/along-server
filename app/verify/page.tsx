@@ -1,95 +1,108 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 
-function VerifyContent() {
+// Screen → custom scheme path mapping
+const SCREEN_MAP: Record<string, string> = {
+  browse:           '(tabs)/rides',
+  rides:            '(tabs)/rides',
+  profile:          '(tabs)/profile',
+  'payment-methods': '(tabs)/profile/payment-methods',
+  home:             '(tabs)',
+};
+
+function OpenContent() {
   const searchParams = useSearchParams();
-  const status       = searchParams.get('status') as 'success' | 'error' | null;
-  const detail       = searchParams.get('detail') ?? '';
-  const [attempted, setAttempted] = useState(false);
+  const screen       = searchParams.get('screen') ?? 'home';
+  const segment      = searchParams.get('segment') ?? '';
+
+  // Build the deep link path with optional segment
+  const path       = SCREEN_MAP[screen] ?? '(tabs)';
+  const segParam   = segment ? `?segment=${encodeURIComponent(segment)}` : '';
+  const deepLink   = `along://${path}${segParam}`;
+  const intentLink = `intent://${path}${segParam}#Intent;scheme=along;package=com.abiodun.along;end`;
 
   useEffect(() => {
-    // Attempt to open the app via custom scheme as a fallback
-    // Universal Links should intercept before this page even loads on a phone
-    // with Along installed — this handles the edge case where they don't
-    const deepLink = `along://verify?status=${status}&detail=${encodeURIComponent(detail)}`;
-    window.location.href = deepLink;
+    const ua        = navigator.userAgent.toLowerCase();
+    const isAndroid = ua.includes('android');
+    const isIOS     = /iphone|ipad|ipod/.test(ua);
 
-    // Mark as attempted after a short delay
-    const timer = setTimeout(() => setAttempted(true), 1500);
-    return () => clearTimeout(timer);
-  }, [status, detail]);
-
-  const isSuccess = status === 'success';
+    if (isIOS)     window.location.href = deepLink;
+    else if (isAndroid) window.location.href = intentLink;
+  }, [deepLink, intentLink]);
 
   return (
     <main style={{
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      minHeight: '100vh', margin: 0, background: '#f5f5f0', padding: '20px',
-      boxSizing: 'border-box',
+      display:        'flex',
+      alignItems:     'center',
+      justifyContent: 'center',
+      minHeight:      '100vh',
+      background:     '#f5f5f0',
+      padding:        '20px',
     }}>
       <div style={{
-        background: 'white', borderRadius: '16px', padding: '40px',
-        textAlign: 'center', maxWidth: '400px', width: '100%',
-        boxShadow: '0 2px 16px rgba(0,0,0,0.08)',
+        background:    'white',
+        borderRadius:  '16px',
+        padding:       '40px',
+        textAlign:     'center',
+        maxWidth:      '400px',
+        width:         '100%',
+        boxShadow:     '0 2px 16px rgba(0,0,0,0.08)',
       }}>
-        <div style={{ fontSize: '48px', marginBottom: '16px' }}>
-          {isSuccess ? '✅' : '❌'}
-        </div>
+        <div style={{ fontSize: '48px', marginBottom: '16px' }}>🚗</div>
 
         <h2 style={{ color: '#1a1a18', margin: '0 0 8px', fontSize: '22px', fontWeight: 600 }}>
-          {isSuccess ? 'Workplace verified!' : 'Verification failed'}
+          Open Along
         </h2>
 
         <p style={{ color: '#5a5a55', margin: '0 0 24px', fontSize: '15px', lineHeight: 1.6 }}>
-          {isSuccess
-            ? 'Your workplace has been verified. Open Along to continue.'
-            : decodeURIComponent(detail)}
+          Along is a mobile app. Download it to continue.
         </p>
 
-        {/* Primary CTA — open app */}
-        <a
-          href={`along://verify?status=${status}&detail=${encodeURIComponent(detail)}`}
-          style={{
-            display: 'inline-block', background: '#14A08A', color: 'white',
-            padding: '12px 28px', borderRadius: '100px', textDecoration: 'none',
-            fontWeight: 500, fontSize: '15px', marginBottom: '16px',
-          }}
-        >
-          Open Along
-        </a>
-
-        {/* Fallback — shown after open attempt, for users without the app */}
-        {attempted && (
-          <p style={{ color: '#8a8a85', fontSize: '13px', margin: '16px 0 0' }}>
-            Don&apos;t have Along yet?{' '}
-            <a
-              href="https://apps.apple.com/app/along"
-              style={{ color: '#14A08A', textDecoration: 'none' }}
-            >
-              Download on iOS
-            </a>
-            {' · '}
-            <a
-              href="https://play.google.com/store/apps/details?id=com.abiodun.along"
-              style={{ color: '#14A08A', textDecoration: 'none' }}
-            >
-              Android
-            </a>
-          </p>
-        )}
+        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <a
+            href="https://apps.apple.com/app/along"
+            style={{
+              display:        'inline-block',
+              background:     '#14A08A',
+              color:          'white',
+              padding:        '12px 24px',
+              borderRadius:   '100px',
+              textDecoration: 'none',
+              fontWeight:     500,
+              fontSize:       '15px',
+            }}
+          >
+            Download on iOS
+          </a>
+          <a
+            href="https://play.google.com/store/apps/details?id=com.abiodun.along"
+            style={{
+              display:        'inline-block',
+              background:     '#1a1a18',
+              color:          'white',
+              padding:        '12px 24px',
+              borderRadius:   '100px',
+              textDecoration: 'none',
+              fontWeight:     500,
+              fontSize:       '15px',
+            }}
+          >
+            Get on Android
+          </a>
+        </div>
       </div>
     </main>
   );
 }
 
-export default function VerifyPage() {
+export default function OpenPage() {
   return (
     <Suspense>
-      <VerifyContent />
+      <OpenContent />
     </Suspense>
   );
 }
