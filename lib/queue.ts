@@ -38,7 +38,9 @@ type SendEmailPayload =
   | { type: 'host_online';            to: string[]; hostName: string; routeLabel: string; monthlyPrice: number }
   | { type: 'rider_trip_confirmed';   to: string;   riderName: string; hostName: string; pickupStop: string; departureTime: string }
   | { type: 'host_pickup_confirmed';  to: string;   riderName: string; hostName: string }
-  | { type: 'no_show';                to: string;   riderName: string; hostName: string; noShowCount: number; maxNoShows: number };
+  | { type: 'no_show';                to: string;   riderName: string; hostName: string; noShowCount: number; maxNoShows: number }
+  | { type: 'account_deleted';        to: string;   name: string; };
+
 
 interface JobPayloadMap {
   send_notification:      SendNotificationPayload;
