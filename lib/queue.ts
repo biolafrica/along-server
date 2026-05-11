@@ -26,10 +26,11 @@ type SendNotificationPayload =
 
 type SendEmailPayload =
   | { type: 'welcome';                to: string;   name: string; accountType: 'host' | 'rider' }
-  | { type: 'ride_request';           to: string;   hostName: string; riderName: string; pickupStop: string; durationMonths: number; totalAmount: number; deadline: string }
-  | { type: 'request_accepted';       to: string;   riderName: string; hostName: string; routeLabel: string; pickupStop: string; departureTime: string }
+  | { type: 'ride_request';           to: string;   hostName: string; riderName: string; pickupStop: string; durationMonths: number; totalAmount: number; deadline: string; gender: string; company:string }
+  | { type: 'request_accepted';       to: string;   riderName: string; hostName: string; routeLabel: string; pickupStop: string; departureTime: string; carMake:string; carModel:string; carColor:string; carPlate:string }
   | { type: 'request_declined';       to: string;   riderName: string; hostName: string; reason: 'declined' | 'expired' }
   | { type: 'payment_confirmation';   to: string;   riderName: string; amount: number; reference: string; hostName: string; durationMonths: number }
+  | { type: 'host_payment_notice';   to: string;   riderName: string; amount: number;  hostName: string; durationMonths: number }
   | { type: 'refund';                 to: string;   riderName: string; amount: number; reference: string; reason: string }
   | { type: 'earnings_credited';      to: string;   hostName: string; amount: number; riderName: string; period: string }
   | { type: 'renewal_reminder';       to: string;   riderName: string; hostName: string; endDate: string }

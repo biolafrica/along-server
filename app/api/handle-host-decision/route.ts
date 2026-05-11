@@ -108,6 +108,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
         token:    rider?.expo_push_token ?? null,
         hostName: host?.name ?? '',
       }),
+
       sub.rider_billing_email && enqueue('send_email', {
         type:          'request_accepted',
         to:            sub.rider_billing_email,
@@ -116,21 +117,27 @@ async function handler(req: NextRequest): Promise<NextResponse> {
         routeLabel:    `${home} → ${work}`,
         pickupStop:    sub.pickup_stop ?? '—',
         departureTime: depTime,
+        carMake:        host?.car_make  ?? "" ,
+        carModel:       host?.car_model  ?? "" ,
+        carColor:       host?.car_color  ?? "" ,
+        carPlate:       host?.car_plate  ?? "" ,
       }),
-      enqueue('send_notification', {
-        type:      'earnings_credited',
-        userId:    uid,
-        token:     host?.expo_push_token ?? null,
-        amount:    sub.host_earning,
-        riderName: rider?.name ?? '',
-      }),
+
+      // enqueue('send_notification', {
+      //   type:      'earnings_credited',
+      //   userId:    uid,
+      //   token:     host?.expo_push_token ?? null,
+      //   amount:    sub.host_earning,
+      //   riderName: rider?.name ?? '',
+      // }),
+
       host?.email && enqueue('send_email', {
-        type:      'earnings_credited',
+        type:      'host_payment_notice',
         to:        host.email,
         hostName:  host.name ?? '',
         amount:    sub.host_earning,
         riderName: rider?.name ?? '',
-        period,
+        durationMonths: sub.duration_months
       }),
     ]);
 

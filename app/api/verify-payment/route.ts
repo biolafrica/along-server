@@ -99,6 +99,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
       token:  rider?.expo_push_token ?? null,
       amount: totalAmount,
     }),
+    
     enqueue('send_email', {
       type:           'payment_confirmation',
       to:             riderEmail,
@@ -108,6 +109,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
       hostName:       host?.name ?? 'your host',
       durationMonths,
     }),
+
     enqueue('send_notification', {
       type:           'new_request',
       userId:         hostId,
@@ -115,6 +117,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
       riderName:      rider?.name ?? 'A rider',
       durationMonths,
     }),
+
     host?.email && enqueue('send_email', {
       type:           'ride_request',
       to:             host.email,
@@ -124,6 +127,8 @@ async function handler(req: NextRequest): Promise<NextResponse> {
       durationMonths,
       totalAmount,
       deadline:       responseDeadline,
+      gender:       rider?.gender ?? '',
+      company:      rider?.company_name ?? ''
     }),
   ]);
 
