@@ -55,41 +55,17 @@ async function sendViaTermii(
 
   const message = `Your Along verification code is: ${otp}. Valid for 10 minutes. Do not share this with anyone.`;
 
-  // Try WhatsApp first
-  try {
-    const waRes = await fetch(`${TERMII_BASE}/sms/send`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to:          phone,
-        from:        'Along',
-        sms:         message,
-        type:        'plain',
-        channel:     'whatsapp',
-        api_key:     TERMII_KEY,
-      }),
-    });
-
-    const waData = await waRes.json();
-
-    if (waRes.ok && waData.code === 'ok') {
-      return { success: true, channel: 'whatsapp' };
-    }
-  } catch (err: any) {
-    logger.warn('termii_whatsapp_failed', { phone, error: err.message });
-  }
-
-  // fall back to SMS via DND-compliant route
+  // Try SMS via DND route first
   try {
     const smsRes = await fetch(`${TERMII_BASE}/sms/send`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         to:      phone,
-        from:    'N-Alert',     // DND-exempt sender ID for Nigerian numbers
+        from:    'N-Alert',
         sms:     message,
         type:    'plain',
-        channel: 'dnd',         // DND route bypasses Do Not Disturb registration
+        channel: 'dnd',
         api_key: TERMII_KEY,
       }),
     });
@@ -100,7 +76,34 @@ async function sendViaTermii(
       return { success: true, channel: 'sms' };
     }
 
-    return { success: false, error: smsData.message ?? 'SMS failed' };
+    logger.warn('termii_sms_failed', { phone, response: smsData });
+
+  } catch (err: any) {
+    logger.warn('termii_sms_error', { phone, error: err.message });
+  }
+
+  // WhatsApp fallback — only if SMS fails
+  try {
+    const waRes = await fetch(`${TERMII_BASE}/sms/send`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to:      phone,
+        from:    'Along',
+        sms:     message,
+        type:    'plain',
+        channel: 'whatsapp',
+        api_key: TERMII_KEY,
+      }),
+    });
+
+    const waData = await waRes.json();
+
+    if (waRes.ok && waData.code === 'ok') {
+      return { success: true, channel: 'whatsapp' };
+    }
+
+    return { success: false, error: waData.message ?? 'All channels failed' };
 
   } catch (err: any) {
     return { success: false, error: err.message };
