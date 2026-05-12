@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth';
 import { db } from '@/lib/firebase-admin';
 import { logger, withApiLogging, dbOperation } from '@/lib/logger';
+import { FieldValue } from 'firebase-admin/firestore';
  
 async function handler(req: NextRequest): Promise<NextResponse> {
   const uid = await verifyToken(req);
@@ -11,12 +12,13 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ message: 'Invalid push token' }, { status: 400 });
   }
  
-  await dbOperation('firestore_write', 'users', uid, () =>
-    db.collection('users').doc(uid).set(
-      { expo_push_token: token,}, { merge: true }
-    )
-  );
-  
+  await dbOperation('firestore_write', 'users', uid, async () => {
+    const userRef = db.collection('users').doc(uid);
+    return userRef.set(
+      { expo_push_tokens: FieldValue.arrayUnion(token), last_updated: FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+  });
  
   logger.info('push_token_registered', { userId: uid });
   return NextResponse.json({ success: true });
