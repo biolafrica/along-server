@@ -1,0 +1,132 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { auth, db } from '@/lib/firebase-admin';
+import { FieldValue } from 'firebase-admin/firestore';
+import { logger, withApiLogging, dbOperation } from '@/lib/logger';
+import crypto from 'crypto';
+
+const MAX_ATTEMPTS = 5;   // Lock after 5 wrong attempts
+const OTP_LENGTH   = 6;
+
+async function handler(req: NextRequest): Promise<NextResponse> {
+  const { phone, otp } = await req.json();
+
+  if (!phone || !otp) {
+    return NextResponse.json({ message: 'Phone and OTP required' }, { status: 400 });
+  }
+
+  if (otp.length !== OTP_LENGTH || !/^\d+$/.test(otp)) {
+    return NextResponse.json({ message: 'Invalid OTP format' }, { status: 400 });
+  }
+
+  const normalised = normaliseNigerianPhone(phone);
+  if (!normalised) {
+    return NextResponse.json({ message: 'Invalid phone number' }, { status: 400 });
+  }
+
+  // ── Fetch OTP session ─────────────────────────────────────────────────────
+  const otpRef  = db.collection('otp_sessions').doc(normalised);
+  const otpSnap = await dbOperation('firestore_read', 'otp_sessions', normalised, () =>
+    otpRef.get()
+  );
+
+  if (!otpSnap.exists) {
+    return NextResponse.json({ message: 'No OTP found. Please request a new code.' }, { status: 404 });
+  }
+
+  const session = otpSnap.data()!;
+
+  // ── Check expiry ──────────────────────────────────────────────────────────
+  if (new Date() > new Date(session.expires_at)) {
+    await otpRef.delete();
+    return NextResponse.json({ message: 'OTP expired. Please request a new code.' }, { status: 410 });
+  }
+
+  // ── Check attempt limit ───────────────────────────────────────────────────
+  if (session.attempts >= MAX_ATTEMPTS) {
+    await otpRef.delete();
+    return NextResponse.json({
+      message: 'Too many incorrect attempts. Please request a new code.',
+    }, { status: 429 });
+  }
+
+  // ── Verify OTP hash ───────────────────────────────────────────────────────
+  const submittedHash = hashOTP(otp);
+
+  if (submittedHash !== session.otp_hash) {
+    // Increment attempts
+    await otpRef.update({ attempts: FieldValue.increment(1) });
+    const remaining = MAX_ATTEMPTS - (session.attempts + 1);
+    logger.warn('otp_wrong_code', { phone: normalised, attempts: session.attempts + 1 });
+    return NextResponse.json({
+      message:   `Incorrect code. ${remaining} attempt${remaining !== 1 ? 's' : ''} remaining.`,
+      remaining,
+    }, { status: 401 });
+  }
+
+  // ── OTP correct — delete session immediately (one-time use) ───────────────
+  await otpRef.delete();
+
+  // ── Find or create Firebase user for this phone number ────────────────────
+  let uid: string;
+  let isNewUser = false;
+
+  try {
+    // Check if user already exists in Firebase Auth
+    const existingUser = await auth.getUserByPhoneNumber(normalised);
+    uid = existingUser.uid;
+  } catch {
+    // User doesn't exist — create them
+    const newUser = await auth.createUser({ phoneNumber: normalised });
+    uid       = newUser.uid;
+    isNewUser = true;
+  }
+
+  // ── Check if user has a Firestore profile ─────────────────────────────────
+  const userSnap = await dbOperation('firestore_read', 'users', uid, () =>
+    db.collection('users').doc(uid).get()
+  );
+
+  const hasProfile       = userSnap.exists;
+  const registrationStage = userSnap.data()?.registration_stage ?? null;
+
+  // ── Create Firebase custom token ──────────────────────────────────────────
+  // The app uses this to call auth().signInWithCustomToken()
+  // After which firebaseUser is populated exactly as before
+  const customToken = await auth.createCustomToken(uid, {
+    phone: normalised,  // extra claims available in security rules if needed
+  });
+
+  logger.info('otp_verified', {
+    uid,
+    phone:   normalised,
+    isNewUser,
+    hasProfile,
+    registrationStage,
+  });
+
+  return NextResponse.json({
+    customToken,
+    uid,
+    // These tell the app what state the user is in so it can route correctly
+    isNewUser,          // true = never registered, show account type selection
+    hasProfile,         // false = started registration but never completed profile
+    registrationStage,  // 'profile' | 'workplace' | 'addresses' | etc — current stage
+  });
+}
+
+function normaliseNigerianPhone(raw: string): string | null {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.startsWith('234') && digits.length === 13) return `+${digits}`;
+  if (digits.startsWith('0')   && digits.length === 11)  return `+234${digits.slice(1)}`;
+  if (digits.length === 10)                               return `+234${digits}`;
+  return null;
+}
+
+function hashOTP(otp: string): string {
+  return crypto
+    .createHmac('sha256', process.env.OTP_HASH_SECRET!)
+    .update(otp)
+    .digest('hex');
+}
+
+export const POST = withApiLogging('verify-otp', handler as any);
