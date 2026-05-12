@@ -1,42 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/firebase-admin';
 import { logger, withApiLogging, dbOperation } from '@/lib/logger';
-import crypto from 'crypto';
+import { generateOTP, hashOTP, normaliseNigerianPhone } from '@/utils/otp';
 
 const TERMII_BASE = 'https://v3.api.termii.com/api';
 const TERMII_KEY  = process.env.TERMII_API_KEY!;
 
 const OTP_TTL_MS  = 10 * 60 * 1000;
-const OTP_LENGTH  = 6;
+
 
 async function handler(req: NextRequest): Promise<NextResponse> {
   const { phone } = await req.json();
-
   if (!phone) {
     return NextResponse.json({ message: 'Phone number required' }, { status: 400 });
   }
 
-  // Normalise to E.164 — strip leading 0, add +234
   const normalised = normaliseNigerianPhone(phone);
   if (!normalised) {
     return NextResponse.json({ message: 'Invalid Nigerian phone number' }, { status: 400 });
   }
-  console.log("normalized number", normalised)
 
-  // Generate a secure 6-digit OTP
-  const otp       = generateOTP();
-  console.log("otp", otp)
+  const otp  = generateOTP();
   const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
-  console.log("expiresAt", expiresAt)
 
-  // Hash it before storing — never store raw OTPs
   const otpHash   = hashOTP(otp);
-  console.log("hash", otpHash)
 
-
-
-  // Store hashed OTP against the phone number
-  // We use phone as the doc ID so there's only ever one pending OTP per number
+  //use phone as the doc ID so there's only ever one pending OTP per number
   const otpRef = db.collection('otp_sessions').doc(normalised);
   const savedData = await dbOperation('firestore_write', 'otp_sessions', normalised, () =>
     otpRef.set({
@@ -48,22 +37,16 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     })
   );
 
-  console.log('savedData', savedData)
-
-  // Send via Termii — try WhatsApp first, fall back to SMS
   const sent = await sendViaTermii(normalised, otp);
-  console.log('sent', sent)
 
   if (!sent.success) {
-    //logger.error('otp_send_failed', new Error(sent.error ?? 'Termii error'), { phone: normalised });
+    logger.error('otp_send_failed', new Error(sent.error ?? 'Termii error'), { phone: normalised });
     return NextResponse.json({ message: 'Failed to send OTP. Please try again.' }, { status: 500 });
   }
 
-  //logger.info('otp_sent', { phone: normalised, channel: sent.channel });
+  logger.info('otp_sent', { phone: normalised, channel: sent.channel });
   return NextResponse.json({ sent: true, channel: sent.channel });
 }
-
-// ─── Termii integration ───────────────────────────────────────────────────────
 
 async function sendViaTermii(
   phone: string,
@@ -72,7 +55,7 @@ async function sendViaTermii(
 
   const message = `Your Along verification code is: ${otp}. Valid for 10 minutes. Do not share this with anyone.`;
 
-  // Try WhatsApp first — higher delivery rate in Nigeria
+  // Try WhatsApp first
   try {
     const waRes = await fetch(`${TERMII_BASE}/sms/send`, {
       method:  'POST',
@@ -96,7 +79,7 @@ async function sendViaTermii(
     logger.warn('termii_whatsapp_failed', { phone, error: err.message });
   }
 
-  // WhatsApp failed — fall back to SMS via DND-compliant route
+  // fall back to SMS via DND-compliant route
   try {
     const smsRes = await fetch(`${TERMII_BASE}/sms/send`, {
       method:  'POST',
@@ -122,32 +105,6 @@ async function sendViaTermii(
   } catch (err: any) {
     return { success: false, error: err.message };
   }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function normaliseNigerianPhone(raw: string): string | null {
-  // Remove all non-digits
-  const digits = raw.replace(/\D/g, '');
-
-  if (digits.startsWith('234') && digits.length === 13) return `+${digits}`;
-  if (digits.startsWith('0')   && digits.length === 11)  return `+234${digits.slice(1)}`;
-  if (digits.length === 10)                               return `+234${digits}`;
-
-  return null;
-}
-
-function generateOTP(): string {
-  // Cryptographically random 6-digit number
-  const num = crypto.randomInt(0, 1_000_000);
-  return String(num).padStart(OTP_LENGTH, '0');
-}
-
-function hashOTP(otp: string): string {
-  return crypto
-    .createHmac('sha256', process.env.OTP_HASH_SECRET!)
-    .update(otp)
-    .digest('hex');
 }
 
 export const POST = withApiLogging('send-otp', handler as any);

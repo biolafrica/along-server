@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth, db } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { logger, withApiLogging, dbOperation } from '@/lib/logger';
-import crypto from 'crypto';
+import { hashOTP, normaliseNigerianPhone } from '@/utils/otp';
 
-const MAX_ATTEMPTS = 5;   // Lock after 5 wrong attempts
+const MAX_ATTEMPTS = 5; 
 const OTP_LENGTH   = 6;
 
 async function handler(req: NextRequest): Promise<NextResponse> {
@@ -23,7 +23,6 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ message: 'Invalid phone number' }, { status: 400 });
   }
 
-  // ── Fetch OTP session ─────────────────────────────────────────────────────
   const otpRef  = db.collection('otp_sessions').doc(normalised);
   const otpSnap = await dbOperation('firestore_read', 'otp_sessions', normalised, () =>
     otpRef.get()
@@ -35,13 +34,13 @@ async function handler(req: NextRequest): Promise<NextResponse> {
 
   const session = otpSnap.data()!;
 
-  // ── Check expiry ──────────────────────────────────────────────────────────
+  // ── Check expiry
   if (new Date() > new Date(session.expires_at)) {
     await otpRef.delete();
     return NextResponse.json({ message: 'OTP expired. Please request a new code.' }, { status: 410 });
   }
 
-  // ── Check attempt limit ───────────────────────────────────────────────────
+  // ── Check attempt limit
   if (session.attempts >= MAX_ATTEMPTS) {
     await otpRef.delete();
     return NextResponse.json({
@@ -49,7 +48,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     }, { status: 429 });
   }
 
-  // ── Verify OTP hash ───────────────────────────────────────────────────────
+  // ── Verify OTP hash 
   const submittedHash = hashOTP(otp);
 
   if (submittedHash !== session.otp_hash) {
@@ -63,25 +62,23 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     }, { status: 401 });
   }
 
-  // ── OTP correct — delete session immediately (one-time use) ───────────────
+  // ── OTP correct: delete session 
   await otpRef.delete();
 
-  // ── Find or create Firebase user for this phone number ────────────────────
+  // Find or create Firebase user for this phone number 
   let uid: string;
   let isNewUser = false;
 
   try {
-    // Check if user already exists in Firebase Auth
     const existingUser = await auth.getUserByPhoneNumber(normalised);
     uid = existingUser.uid;
   } catch {
-    // User doesn't exist — create them
     const newUser = await auth.createUser({ phoneNumber: normalised });
     uid       = newUser.uid;
     isNewUser = true;
   }
 
-  // ── Check if user has a Firestore profile ─────────────────────────────────
+  // Check if user has a Firestore profile 
   const userSnap = await dbOperation('firestore_read', 'users', uid, () =>
     db.collection('users').doc(uid).get()
   );
@@ -90,8 +87,6 @@ async function handler(req: NextRequest): Promise<NextResponse> {
   const registrationStage = userSnap.data()?.registration_stage ?? null;
 
   // ── Create Firebase custom token ──────────────────────────────────────────
-  // The app uses this to call auth().signInWithCustomToken()
-  // After which firebaseUser is populated exactly as before
   const customToken = await auth.createCustomToken(uid, {
     phone: normalised,  // extra claims available in security rules if needed
   });
@@ -114,19 +109,6 @@ async function handler(req: NextRequest): Promise<NextResponse> {
   });
 }
 
-function normaliseNigerianPhone(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('234') && digits.length === 13) return `+${digits}`;
-  if (digits.startsWith('0')   && digits.length === 11)  return `+234${digits.slice(1)}`;
-  if (digits.length === 10)                               return `+234${digits}`;
-  return null;
-}
 
-function hashOTP(otp: string): string {
-  return crypto
-    .createHmac('sha256', process.env.OTP_HASH_SECRET!)
-    .update(otp)
-    .digest('hex');
-}
 
 export const POST = withApiLogging('verify-otp', handler as any);
