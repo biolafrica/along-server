@@ -1,7 +1,7 @@
 import { Resend } from 'resend';
 
 const resend = new Resend(process.env.RESEND_API_KEY!);
-const FROM   = 'Usealong <notifications@bukah.co>';
+const FROM   = 'Usealong <notifications@usealong.co>';
 
 async function send(to: string | string[], subject: string, html: string) {
   try {

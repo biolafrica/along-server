@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import { Resend } from 'resend';
 
 const resend = new Resend(process.env.RESEND_API_KEY!);
-const FROM   = 'Usealong <notifications@bukah.co>';
+const FROM   = 'Usealong <notifications@usealong.co>';
 
 async function handler(req: NextRequest): Promise<NextResponse> {
   const uid = await verifyToken(req);
