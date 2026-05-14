@@ -4,7 +4,8 @@
       {
         "appIDs": ["RXNZW53D7V.com.abiodun.along"],
         "components": [
-          { "/": "/verify*",           "comment": "Workplace verification redirect" },
+          { "/": "/verified*",         "comment": "Workplace verification redirect" },
+          { "/": "/open*",           "comment": "Email verification redirect" },
           { "/": "/payment-callback*", "comment": "Payment callback redirect" }
         ]
       }
