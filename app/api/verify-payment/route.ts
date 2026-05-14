@@ -61,8 +61,8 @@ async function handler(req: NextRequest): Promise<NextResponse> {
   const SERVICE_FEE_RATE = 0.10;
   const baseAmount       = monthlyPrice * durationMonths;
   const serviceFee       = Math.round(baseAmount * SERVICE_FEE_RATE);
-  const totalAmount      = baseAmount + serviceFee;
-  const hostEarning      = baseAmount;
+  const totalAmount = baseAmount;
+  const hostEarning = baseAmount - serviceFee; 
 
   const startDate        = new Date();
   const endDate          = new Date();
