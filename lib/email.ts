@@ -1,7 +1,7 @@
 import { Resend } from 'resend';
 
 const resend = new Resend(process.env.RESEND_API_KEY!);
-const FROM   = 'Along <notifications@bukah.co>';
+const FROM   = 'Usealong <notifications@bukah.co>';
 
 async function send(to: string | string[], subject: string, html: string) {
   try {
@@ -29,7 +29,7 @@ function template(title: string, body: string, cta?: { label: string; url: strin
         <table width="560" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:16px;
           overflow:hidden;border:1px solid #e8e8e0;">
           <tr><td style="background:#14A08A;padding:24px 32px;">
-            <span style="color:#fff;font-size:20px;font-weight:600;">Along</span>
+            <span style="color:#fff;font-size:20px;font-weight:600;">Usealong</span>
           </td></tr>
           <tr><td style="padding:32px;">
             <h2 style="margin:0 0 16px;font-size:22px;font-weight:600;color:#1a1a18;">${title}</h2>
@@ -38,7 +38,7 @@ function template(title: string, body: string, cta?: { label: string; url: strin
           </td></tr>
           <tr><td style="padding:20px 32px;background:#f5f5f0;border-top:1px solid #e8e8e0;">
             <p style="margin:0;font-size:12px;color:#8a8a85;">
-              Along — Commute with people you trust.
+              Usealong — Commute with people you trust.
             </p>
           </td></tr>
         </table>
@@ -53,9 +53,9 @@ export function sendWelcomeEmail(to: string, name: string, accountType: 'host' |
   const roleText = accountType === 'host'
     ? 'Set up your schedule and go live to start accepting riders.'
     : 'Browse hosts on your route and subscribe to a daily ride.';
-  return send(to, `Welcome to Along, ${first}! Your account is verified ✓`,
+  return send(to, `Welcome to Usealong, ${first}! Your account is verified ✓`,
     template(`You're verified, ${first}!`,
-      `<p>Welcome to Along. ${roleText}</p>`,
+      `<p>Welcome to Usealong. ${roleText}</p>`,
       { label: accountType === 'host' ? 'Go live now' : 'Browse hosts', url: process.env.NEXT_PUBLIC_APP_URL! }
     )
   );
@@ -170,7 +170,7 @@ export function sendRenewalReminderEmail(params: {
   const { to, riderName, hostName, endDate } = params;
   const first = riderName.split(' ')[0];
   const end   = new Date(endDate).toLocaleDateString('en-NG', { dateStyle: 'long' });
-  return send(to, `Your Along subscription ends on ${end}`,
+  return send(to, `Your Usealong subscription ends on ${end}`,
     template(`Subscription ending soon`,
       `<p>Hi ${first}, your subscription with <strong>${hostName}</strong> ends on <strong>${end}</strong>.</p>
        <p>Your card will be automatically charged to renew. Cancel in the app before ${end} if you don't want to renew.</p>`,
@@ -189,11 +189,11 @@ export function sendSubscriptionCompletedEmail(params: {
 
   const intro = role === 'host' ? `<p>Hi ${first}, your subscription for ${period} between ${start} and ${end} has been completed successfully. You've earned ₦${amount.toLocaleString()} from this subscription.</p>` : `<p>Hi ${first}, your subscription for ${period} between ${start} and ${end} has been completed successfully. You've paid ₦${amount.toLocaleString()} for this subscription.</p>`;
 
-  return send(to, `Your Along subscription for ${period} has ended`,
+  return send(to, `Your Usealong subscription for ${period} has ended`,
     template(`Subscription completed`,
       `<p>${intro}</p>
         <p>${role === 'host' ? `You've earned ₦${amount.toLocaleString()} from this subscription.` : `You've paid ₦${amount.toLocaleString()} for this subscription.`}</p>
-        <p>Thank you for being part of the Along community.</p>`,
+        <p>Thank you for being part of the Usealong community.</p>`,
       { label: 'Check Details', url: process.env.NEXT_PUBLIC_APP_URL! }
     )
   );

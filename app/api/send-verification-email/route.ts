@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import { Resend } from 'resend';
 
 const resend = new Resend(process.env.RESEND_API_KEY!);
-const FROM   = 'Along <notifications@bukah.co>';
+const FROM   = 'Usealong <notifications@bukah.co>';
 
 async function handler(req: NextRequest): Promise<NextResponse> {
   const uid = await verifyToken(req);
@@ -34,7 +34,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
   await resend.emails.send({
     from:    FROM,
     to:      workEmail,
-    subject: 'Verify your workplace for Along',
+    subject: 'Verify your workplace for Usealong',
     html:    buildEmail(companyName ?? 'your company', verifyUrl),
   });
 
@@ -52,7 +52,7 @@ function buildEmail(companyName: string, verifyUrl: string): string {
         <table width="560" cellpadding="0" cellspacing="0" style="background:#fff;
           border-radius:16px;overflow:hidden;border:1px solid #e8e8e0;">
           <tr><td style="background:#14A08A;padding:24px 32px;">
-            <span style="color:#fff;font-size:20px;font-weight:600;">Along</span>
+            <span style="color:#fff;font-size:20px;font-weight:600;">Usealong</span>
           </td></tr>
           <tr><td style="padding:32px;">
             <h2 style="margin:0 0 16px;font-size:22px;font-weight:600;color:#1a1a18;">
@@ -60,7 +60,7 @@ function buildEmail(companyName: string, verifyUrl: string): string {
             </h2>
             <div style="font-size:15px;line-height:1.7;color:#5a5a55;">
               <p>Click the button below to confirm you work at <strong>${companyName}</strong>
-              and complete your Along account verification.</p>
+              and complete your Usealong account verification.</p>
               <p>This link expires in <strong>24 hours</strong>.</p>
             </div>
             <div style="text-align:center;margin:32px 0;">
@@ -71,12 +71,12 @@ function buildEmail(companyName: string, verifyUrl: string): string {
               </a>
             </div>
             <p style="font-size:13px;color:#8a8a85;">
-              If you didn't create an Along account, you can safely ignore this email.
+              If you didn't create an Usealong account, you can safely ignore this email.
             </p>
           </td></tr>
           <tr><td style="padding:20px 32px;background:#f5f5f0;border-top:1px solid #e8e8e0;">
             <p style="margin:0;font-size:12px;color:#8a8a85;">
-              Along — Commute with people you trust.
+              Usealong — Commute with people you trust.
             </p>
           </td></tr>
         </table>

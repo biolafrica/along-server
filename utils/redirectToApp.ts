@@ -13,7 +13,7 @@ export function redirectToApp(
   return new NextResponse(
     `<!DOCTYPE html><html><head>
       <meta charset="utf-8">
-      <title>Along — Workplace Verification</title>
+      <title>Usealong — Workplace Verification</title>
       <meta http-equiv="refresh" content="0;url=${universalLink}">
       <style>
         body { font-family: -apple-system, sans-serif; display: flex; align-items: center;
@@ -31,9 +31,9 @@ export function redirectToApp(
         <div class="icon">${status === 'success' ? '✅' : '❌'}</div>
         <h2>${status === 'success' ? 'Workplace verified!' : 'Verification failed'}</h2>
         <p>${status === 'success'
-          ? 'Your workplace has been verified. Open Along to continue.'
+          ? 'Your workplace has been verified. Open Usealong to continue.'
           : decodeURIComponent(detail)}</p>
-        <a href="${universalLink}">Open Along</a>
+        <a href="${universalLink}">Open Usealong</a>
       </div>
     </body></html>`,
     {

@@ -28,7 +28,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ message, code: 'DUPLICATE_SUBSCRIPTION' }, { status: 409 });
   }
 
-  const reference = `along_${uid}_${Date.now()}`;
+  const reference = `usealong_${uid}_${Date.now()}`;
 
   const data = await paystackPost('/transaction/initialize', {
     email:        riderEmail,

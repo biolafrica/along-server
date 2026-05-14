@@ -53,7 +53,7 @@ async function sendViaTermii(
   otp:   string,
 ): Promise<{ success: boolean; channel?: string; error?: string }> {
 
-  const message = `Your Along verification code is: ${otp}. Valid for 10 minutes. Do not share this with anyone.`;
+  const message = `Your Usealong verification code is: ${otp}. Valid for 10 minutes. Do not share this with anyone.`;
 
   // Try SMS via DND route first
   try {
@@ -89,7 +89,7 @@ async function sendViaTermii(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         to:      phone,
-        from:    'Along',
+        from:    'Usealong',
         sms:     message,
         type:    'plain',
         channel: 'whatsapp',

@@ -55,11 +55,11 @@ function OpenContent() {
         <div style={{ fontSize: '48px', marginBottom: '16px' }}>🚗</div>
 
         <h2 style={{ color: '#1a1a18', margin: '0 0 8px', fontSize: '22px', fontWeight: 600 }}>
-          Open Along
+          Open Usealong
         </h2>
 
         <p style={{ color: '#5a5a55', margin: '0 0 24px', fontSize: '15px', lineHeight: 1.6 }}>
-          Along is a mobile app. Download it to continue.
+          Usealong is a mobile app. Download it to continue.
         </p>
 
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>

@@ -57,7 +57,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
       is_deleted:       true,
       deleted_at:       FieldValue.serverTimestamp(),
       name:             '[Deleted User]',
-      email:            `deleted_${uid}@along.invalid`,
+      email:            `deleted_${uid}@usealong.invalid`,
       phone:            null,
       photo_url:        null,
       expo_push_token:  null,

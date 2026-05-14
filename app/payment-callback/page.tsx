@@ -38,7 +38,7 @@ function PaymentCallbackContent() {
         </h2>
 
         <p style={{ color: '#5a5a55', margin: '0 0 24px', fontSize: '15px', lineHeight: 1.6 }}>
-          Opening Along to confirm your payment...
+          Opening Usealong to confirm your payment...
         </p>
 
         <a
@@ -49,12 +49,12 @@ function PaymentCallbackContent() {
             fontWeight: 500, fontSize: '15px', marginBottom: '16px',
           }}
         >
-          Open Along
+          Open Usealong
         </a>
 
         {attempted && (
           <p style={{ color: '#8a8a85', fontSize: '13px', margin: '16px 0 0' }}>
-            Don&apos;t have Along yet?{' '}
+            Don&apos;t have Usealong yet?{' '}
             <a
               href="https://apps.apple.com/app/along"
               style={{ color: '#14A08A', textDecoration: 'none' }}

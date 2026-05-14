@@ -92,12 +92,12 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ result: 'completed_no_transfer', reason: 'no_recipient_code' });
   }
 
-  const reference   = `along_payout_${subscriptionId}_${Date.now()}`;
+  const reference   = `usealong_payout_${subscriptionId}_${Date.now()}`;
   const transferRes = await paystackPost('/transfer', {
     source:    'balance',
     amount:    sub.host_earning * 100,
     recipient: host.paystack_recipient_code,
-    reason:    `Along earnings — ${period}`,
+    reason:    `Usealong earnings — ${period}`,
     reference,
     currency:  'NGN',
   });
