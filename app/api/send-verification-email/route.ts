@@ -35,7 +35,7 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     from:    FROM,
     to:      workEmail,
     subject: 'Verify your workplace for Usealong',
-    html:    buildEmail(companyName ?? 'your company', verifyUrl),
+    html:    buildEmail(companyName ?? 'Usealong', verifyUrl),
   });
 
   logger.info('verification_email_sent', { uid, workEmail });

@@ -4,7 +4,6 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { enqueue } from '@/lib/queue';
 import { logger, dbOperation } from '@/lib/logger';
 
-const APP_URL = 'https://usealong.co';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -79,7 +78,7 @@ export async function GET(req: NextRequest) {
 }
 
 function redirectToVerifyPage(status: 'success' | 'error', detail: string): NextResponse {
-  const url = new URL(`${APP_URL}/verified`);
+  const url = new URL(`${process.env.NEXT_PUBLIC_APP_URL}/verified`);
   url.searchParams.set('status', status);
   url.searchParams.set('detail', detail);
  
