@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/firebase-admin';
+import { auth, db } from '@/lib/firebase-admin';
 import { logger, withApiLogging, dbOperation } from '@/lib/logger';
 import { generateOTP, hashOTP, normaliseNigerianPhone } from '@/utils/otp';
 
@@ -10,7 +10,7 @@ const OTP_TTL_MS  = 10 * 60 * 1000;
 
 
 async function handler(req: NextRequest): Promise<NextResponse> {
-  const { phone } = await req.json();
+  const { phone, mode} = await req.json();
   if (!phone) {
     return NextResponse.json({ message: 'Phone number required' }, { status: 400 });
   }
@@ -20,14 +20,28 @@ async function handler(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ message: 'Invalid Nigerian phone number' }, { status: 400 });
   }
 
+  if (mode === 'login') {
+    try {
+      await auth.getUserByPhoneNumber(normalised);
+      // User exists — fall through and send OTP normally
+    } catch {
+      // getUserByPhoneNumber throws when not found — user is new
+      logger.info('otp_login_user_not_found', { phone: normalised });
+      return NextResponse.json({
+        sent:     false,
+        redirect: 'register',
+        message:  'No account found for this number.',
+      }, { status: 404 });
+    }
+  }
+ 
   const otp  = generateOTP();
   const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
-
   const otpHash   = hashOTP(otp);
 
   //use phone as the doc ID so there's only ever one pending OTP per number
   const otpRef = db.collection('otp_sessions').doc(normalised);
-  const savedData = await dbOperation('firestore_write', 'otp_sessions', normalised, () =>
+  await dbOperation('firestore_write', 'otp_sessions', normalised, () =>
     otpRef.set({
       phone:      normalised,
       otp_hash:   otpHash,
