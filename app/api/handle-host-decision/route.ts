@@ -117,10 +117,10 @@ async function handler(req: NextRequest): Promise<NextResponse> {
         routeLabel:    `${home} → ${work}`,
         pickupStop:    sub.pickup_stop ?? '—',
         departureTime: depTime,
-        carMake:        host?.car_make  ?? "" ,
-        carModel:       host?.car_model  ?? "" ,
-        carColor:       host?.car_color  ?? "" ,
-        carPlate:       host?.car_plate  ?? "" ,
+        carMake:        hostProfile?.car_make  ?? "" ,
+        carModel:       hostProfile?.car_model  ?? "" ,
+        carColor:       hostProfile?.car_color  ?? "" ,
+        carPlate:       hostProfile?.car_plate  ?? "" ,
       }),
 
       // enqueue('send_notification', {
